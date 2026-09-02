@@ -73,3 +73,17 @@ export default defineConfig([
 ])
 
 ```
+
+
+
+<!-- Things I need to know everytime -->
+
+
+<!-- When the shadow layers added do not forget to add labels on top of the shadows -->
+<!-- layers: [
+  ...layers('protomaps', GRAYSCALE),                              // base, no labels
+  ...yourShadowAndRouteLayers,
+  ...layers('protomaps', GRAYSCALE, { labelsOnly: true, lang: 'ru' }),  // labels last
+] -->
+
+<!-- Fonts are taken from the website. Download them and point to local folder before deploying -->
