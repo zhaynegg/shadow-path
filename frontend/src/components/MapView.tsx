@@ -21,9 +21,25 @@ function MapView(){
                     protomaps: {
                         type: 'vector',
                         url: 'pmtiles:///my_area.pmtiles',
-                    }
+                    },
+                    shadows: {
+                        type: 'geojson',
+                        data: '/fixtures/shadows-1200.geojson'
+                    },
                 },
-                layers: layers('protomaps', GRAYSCALE, {lang: 'en'}),
+                layers: [
+                    ...layers('protomaps', GRAYSCALE),
+                    {
+                        id: 'shadow',
+                        type: 'fill',
+                        source: 'shadows',
+                        paint: {
+                            'fill-color': '#4a4a68',
+                            'fill-opacity': 0.3,
+                        },
+                    },
+                    ...layers('protomaps', GRAYSCALE, { labelsOnly: true, lang: 'en'}),
+                ],
                 glyphs: 'https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf',
             },
             center: [71.4704, 51.1605],
