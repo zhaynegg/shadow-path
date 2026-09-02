@@ -13,6 +13,7 @@ dist/
 # Cached OSM / geo data (regenerable, large)
 data/cache/*
 !data/cache/.gitkeep
+frontend/public/*.pmtiles
 
 # Env & editors
 .env
