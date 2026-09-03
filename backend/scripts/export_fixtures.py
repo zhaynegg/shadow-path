@@ -16,6 +16,7 @@ from shapely.affinity import translate
 from shapely.geometry import Point
 
 LEVEL_HEIGHT = 3.2
+RADIUS = 2000
 LAT, LON = 51.1605, 71.4704
 TZ = dt.timezone(dt.timedelta(hours=5))
 
@@ -108,7 +109,7 @@ def write_fixture(geom, crs, when: dt.datetime, altitude: float, azimuth: float,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache-dir", type=Path, default=Path(__file__).resolve().parents[2] / "data" / "cache")
-    parser.add_argument("--radius", type=float, default=2000)
+    parser.add_argument("--radius", type=float, default=RADIUS)
     parser.add_argument("--date", type=dt.date.fromisoformat, default=dt.date(2026, 6, 21))
     parser.add_argument(
         "--out-dir",
