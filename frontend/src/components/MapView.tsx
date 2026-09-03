@@ -3,6 +3,7 @@ import * as maplibregl from 'maplibre-gl'
 import { useRef, useEffect, useState } from 'react'
 import { Protocol } from 'pmtiles'
 import { layers, GRAYSCALE } from '@protomaps/basemaps'
+import TimeSlider from './controls/TimeSlider'
 
 const protocol = new Protocol({ metadata: true })
 const FIXTURES = [
@@ -70,14 +71,7 @@ function MapView(){
             <div style={{height: '100%'}} ref={containerRef}>
 
             </div>
-            <div style={{position: 'absolute', zIndex: 1, bottom: 16, left: 16}}>
-                <input type="range" min={0} max={FIXTURES.length - 1}
-                step={1} value={index}
-                onChange={(e) => setIndex(Number(e.target.value))}/>
-                <div>
-                    <p>{FIXTURES[index].label}</p>
-                </div>
-            </div>
+            <TimeSlider labels={FIXTURES.map(f => f.label)} value = {index} onChange={setIndex}/>
         </div>
     )
 }
