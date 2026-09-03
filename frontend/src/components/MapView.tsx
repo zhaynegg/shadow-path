@@ -1,15 +1,27 @@
 import 'maplibre-gl/dist/maplibre-gl.css'
 import * as maplibregl from 'maplibre-gl'
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import { Protocol } from 'pmtiles'
 import { layers, GRAYSCALE } from '@protomaps/basemaps'
 
 const protocol = new Protocol({ metadata: true })
+const FIXTURES = [
+    { label: '08:00', path: '/fixtures/shadows-0800.geojson'},
+    { label: '12:00', path: '/fixtures/shadows-1200.geojson'},
+    { label: '16:00', path: '/fixtures/shadows-1600.geojson'},
+    { label: '19:00', path: '/fixtures/shadows-1900.geojson'},
+]
 maplibregl.addProtocol('pmtiles', protocol.tile)
 
 function MapView(){
     const containerRef = useRef<HTMLDivElement>(null)
     const mapRef = useRef<maplibregl.Map | null>(null)
+    const [index, setIndex] = useState(0)
+
+    useEffect(() => {
+        const source = mapRef.current?.getSource('shadows') as maplibregl.GeoJSONSource | undefined
+        source?.setData(FIXTURES[index].path)
+    }, [index])
     useEffect(() => {
         if(!containerRef.current) return
 
@@ -54,8 +66,18 @@ function MapView(){
         }
     }, []) // [] means "run this once, when the component first appears."
     return (
-        <div style={{'backgroundColor': "grey", 'height': "100vh"}} ref={containerRef}>
-            
+        <div style={{position: 'relative', height: '100vh'}}>
+            <div style={{height: '100%'}} ref={containerRef}>
+
+            </div>
+            <div style={{position: 'absolute', zIndex: 1, bottom: 16, left: 16}}>
+                <input type="range" min={0} max={FIXTURES.length - 1}
+                step={1} value={index}
+                onChange={(e) => setIndex(Number(e.target.value))}/>
+                <div>
+                    <p>{FIXTURES[index].label}</p>
+                </div>
+            </div>
         </div>
     )
 }
