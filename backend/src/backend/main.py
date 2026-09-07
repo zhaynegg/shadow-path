@@ -1,27 +1,18 @@
 """HTTP API for the shadow map."""
-
+# uv run uvicorn backend.main:app --reload --port 8000
 from __future__ import annotations
 
 import datetime as dt
 import json
 from functools import lru_cache
-from pathlib import Path
 
 import geopandas as gpd
 from fastapi import FastAPI, Query
 
-from backend.core.buildings import LAT, LON, load_buildings
-from backend.core.shadow import shadow_field, shadow_frame
+from backend.config import CACHE_DIR, DATE, LAT, LON, RADIUS, TZ
+from backend.core.buildings import load_buildings
+from backend.core.shadows import shadow_field, shadow_frame
 from backend.core.solar import sun_position
-
-# This file sits at backend/src/backend/, so the repo root is four levels up.
-CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "cache"
-RADIUS = 2000
-TZ = dt.timezone(dt.timedelta(hours=5))
-
-# Fixed until the API takes a date, and deliberately the same day the fixtures
-# were exported for, so responses can be compared against them.
-DATE = dt.date(2026, 6, 21)
 
 app = FastAPI()
 

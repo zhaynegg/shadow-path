@@ -9,12 +9,10 @@ import argparse
 import datetime as dt
 from pathlib import Path
 
-from backend.core.buildings import LAT, LON, load_buildings
-from backend.core.shadow import cast_shadow, shadow_field, shadow_frame
+from backend.config import LAT, LON, RADIUS, TZ
+from backend.core.buildings import load_buildings
+from backend.core.shadows import cast_shadow, shadow_field, shadow_frame
 from backend.core.solar import sun_position
-
-RADIUS = 2000
-TZ = dt.timezone(dt.timedelta(hours=5))
 
 # Local hours to export. Morning, noon, afternoon, evening.
 FIXTURE_HOURS = (8, 12, 16, 19)

@@ -9,9 +9,7 @@ import geopandas as gpd
 import numpy as np
 from shapely.geometry import Point
 
-# City centre. The load radius is measured from here, and it is the same point
-# the sun position is computed for.
-LAT, LON = 51.1605, 71.4704
+from backend.config import LAT, LON
 
 # Assumed storey height, for buildings tagged with levels but no height.
 LEVEL_HEIGHT = 3.2
