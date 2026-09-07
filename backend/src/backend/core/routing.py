@@ -1,15 +1,30 @@
 import geopandas as gpd
 import networkx as nx
 import osmnx as ox
+import shapely
 from shapely.geometry import Point
 
 from backend.config import CRS
 
 
+# A click a little off a pavement is normal; a click across town is not. Beyond
+# this, the nearest node is not a reasonable stand-in for what the user meant.
+MAX_SNAP_M = 300.0
+
+
 def nearest_node(graph, lat: float, lon: float) -> int:
+    """The graph node closest to a lat/lon, if one is close enough to mean it."""
     nodes = ox.graph_to_gdfs(graph, edges=False)
     point = gpd.GeoSeries([Point(lon, lat)], crs=4326).to_crs(CRS).iloc[0]
-    return nodes.distance(point).idxmin()
+
+    distances = nodes.distance(point)
+    node = distances.idxmin()
+    if distances[node] > MAX_SNAP_M:
+        raise ValueError(
+            f"That point is {distances[node] / 1000:.1f} km from the nearest mapped "
+            "street. The walking network only covers the city centre."
+        )
+    return node
 
 
 
@@ -26,7 +41,18 @@ def route(graph, scored, origin, destination, alpha) -> dict:
 
     orig = nearest_node(graph, *origin)
     dest = nearest_node(graph, *destination)
-    path = nx.astar_path(graph, orig, dest, heuristic=heuristic, weight="shade_weight")
+
+    # Two clicks a few metres apart snap to the same corner. The path is then a
+    # single node, which has no edges to measure, draw, or divide by.
+    if orig == dest:
+        raise ValueError(
+            "Those two points are the same street corner. Pick somewhere further apart."
+        )
+
+    try:
+        path = nx.astar_path(graph, orig, dest, heuristic=heuristic, weight="shade_weight")
+    except nx.NetworkXNoPath as exc:
+        raise ValueError("No walking route connects those two points.") from exc
 
     distance = 0.0
     shaded = 0.0
@@ -35,7 +61,10 @@ def route(graph, scored, origin, destination, alpha) -> dict:
         distance += data["length"]
         shaded += data["length"] * data["shade_fraction"]
 
-    return {"distance_m": distance, "shade_fraction": shaded / distance}
+    edges = ox.routing.route_to_gdf(graph, path, weight="shade_weight")
+    line = shapely.line_merge(shapely.MultiLineString([list(g.coords) for g in edges.geometry]))
+
+    return {"distance_m": distance, "shade_fraction": shaded / distance, "geometry": line}
 
 def plan(graph, scored, origin, destination, alpha) -> dict:
     return {
