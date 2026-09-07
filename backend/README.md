@@ -1,0 +1,1 @@
+Also worth knowing for later: route writes attributes onto the graph, so two requests running at once would tread on each other. Fine now, a real problem when it's behind the API.
