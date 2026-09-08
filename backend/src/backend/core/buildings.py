@@ -23,8 +23,12 @@ def parse_numeric(value: object) -> float:
     return float(match.group(1).replace(",", ".")) if match else np.nan
 
 
-def load_buildings(cache_dir: Path, radius: float) -> gpd.GeoDataFrame:
-    """Footprints within `radius` metres of the centre, each with a height_m.
+def load_buildings(cache_dir: Path, radius: float | None = None) -> gpd.GeoDataFrame:
+    """Footprints with a height_m, the whole cached city unless `radius` clips it.
+
+    The cache covers all of Astana -- 50k footprints over 34 x 52 km. Pass a
+    radius only when the caller genuinely works in one small place, as routing
+    does; the map asks by viewport instead, through `in_view`.
 
     Height falls back through three sources: the `height` tag, then
     `building:levels` times a storey height, then a single storey. Most of
@@ -32,11 +36,13 @@ def load_buildings(cache_dir: Path, radius: float) -> gpd.GeoDataFrame:
     """
     gdf = gpd.read_parquet(cache_dir / "astana_buildings.parquet")
 
-    # The parquet is in a projected CRS (metres), so reproject the centre to
-    # match before measuring distance -- degrees and metres do not compare.
-    centre = gpd.GeoSeries([Point(LON, LAT)], crs=4326).to_crs(gdf.crs).iloc[0]
-    gdf = gdf[gdf.geometry.distance(centre) <= radius].copy()
+    if radius is not None:
+        # The parquet is in a projected CRS (metres), so reproject the centre to
+        # match before measuring distance -- degrees and metres do not compare.
+        centre = gpd.GeoSeries([Point(LON, LAT)], crs=4326).to_crs(gdf.crs).iloc[0]
+        gdf = gdf[gdf.geometry.distance(centre) <= radius]
 
+    gdf = gdf.copy()
     levels = gdf["building:levels"].map(parse_numeric)
     gdf["height_m"] = (
         gdf["height"]

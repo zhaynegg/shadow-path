@@ -16,16 +16,37 @@ const HOURS = Array.from({ length: 24 }, (_, hour) => hour)
 const HOUR_LABELS = HOURS.map(hour => `${String(hour).padStart(2, '0')}:00`)
 const INITIAL_HOUR = 12
 const INITIAL_ALPHA = 6
+const INITIAL_ZOOM = 14
 
-// Dragging a slider crosses many values on the way to the one you want, and
-// each is a real computation on the server. Wait for the drag to settle.
+// Dragging a slider crosses many values on the way to the one you want. Each
+// would re-plan a route on the server and re-point the shadow layer. Wait for
+// the drag to settle.
 const DEBOUNCE_MS = 150
 
 const ROUTE_COLOUR = '#2563eb'
 const BASELINE_COLOUR = '#9ca3af'
 
 const EMPTY = { type: 'FeatureCollection' as const, features: [] }
-const shadowUrl = (hour: number) => `/api/shadows?hour=${hour}`
+
+// One precomputed tileset per hour, from backend/scripts/export_shadow_tiles.py.
+// Outside these hours the sun is below the horizon and no file exists.
+const FIRST_LIGHT = 5
+const LAST_LIGHT = 20
+const DAYLIGHT_HOURS = HOURS.filter(hour => hour >= FIRST_LIGHT && hour <= LAST_LIGHT)
+
+// Every hour gets its own source and layer, and changing the clock only flips
+// which one is visible. Pointing one source at a new file means asking maplibre
+// to reload it -- which raced itself when the slider was dragged and left the
+// wrong hour on screen. A visibility flip is local and cannot race.
+const shadowTiles = (hour: number) =>
+    `pmtiles:///shadows/${String(hour).padStart(2, '0')}.pmtiles`
+const shadowSource = (hour: number) => `shadows-${hour}`
+const shadowLayer = (hour: number) => `shadow-${hour}`
+
+// The layer name inside every tileset, set by --layer in the export script.
+const SHADOW_LAYER = 'shadows'
+const SHADOW_COLOUR = '#4a4a68'
+const SHADOW_OPACITY = 0.3
 
 // A source wants a FeatureCollection; a route is a bare geometry until wrapped.
 const asFeature = (geometry: LineGeometry | undefined) =>
@@ -48,13 +69,22 @@ function MapView() {
 
     // --- shadows follow the clock ------------------------------------------
     useEffect(() => {
+        const map = mapRef.current
+
+        // getLayer is undefined until the style has loaded, and until then the
+        // style is already showing INITIAL_HOUR -- nothing to correct.
+        if (!map?.getLayer(shadowLayer(FIRST_LIGHT))) return
+
         const timer = setTimeout(() => {
-            const source = mapRef.current?.getSource('shadows') as maplibregl.GeoJSONSource | undefined
-            source?.setData(shadowUrl(hour))
+            // At night no hour matches, every layer hides, and the map is bare
+            // -- which is the right picture when the sun is down.
+            for (const candidate of DAYLIGHT_HOURS) {
+                map.setLayoutProperty(shadowLayer(candidate), 'visibility',
+                    candidate === hour ? 'visible' : 'none')
+            }
         }, DEBOUNCE_MS)
 
-        // Runs before the next effect and on unmount: a pending fetch for an
-        // hour the user has already scrolled past is cancelled here.
+        // A drag across the slider passes through hours nobody stops on.
         return () => clearTimeout(timer)
     }, [hour])
 
@@ -125,24 +155,31 @@ function MapView() {
                         type: 'vector',
                         url: 'pmtiles:///my_area.pmtiles',
                     },
-                    shadows: {
-                        type: 'geojson',
-                        data: shadowUrl(INITIAL_HOUR),
-                    },
+                    // Shadows are tiles like the basemap, not a query: the
+                    // browser pulls only the ones on screen, and they are
+                    // already drawn when you arrive.
+                    ...Object.fromEntries(DAYLIGHT_HOURS.map(hour => [
+                        shadowSource(hour),
+                        { type: 'vector' as const, url: shadowTiles(hour) },
+                    ])),
                     baseline: { type: 'geojson', data: EMPTY },
                     route: { type: 'geojson', data: EMPTY },
                 },
                 layers: [
                     ...layers('protomaps', GRAYSCALE),
-                    {
-                        id: 'shadow',
-                        type: 'fill',
-                        source: 'shadows',
-                        paint: {
-                            'fill-color': '#4a4a68',
-                            'fill-opacity': 0.3,
+                    ...DAYLIGHT_HOURS.map(hour => ({
+                        id: shadowLayer(hour),
+                        type: 'fill' as const,
+                        source: shadowSource(hour),
+                        'source-layer': SHADOW_LAYER,
+                        layout: {
+                            visibility: (hour === INITIAL_HOUR ? 'visible' : 'none') as 'visible' | 'none',
                         },
-                    },
+                        paint: {
+                            'fill-color': SHADOW_COLOUR,
+                            'fill-opacity': SHADOW_OPACITY,
+                        },
+                    })),
                     // Baseline under the route: where they overlap, the shaded
                     // route should be the one you see.
                     {
@@ -171,7 +208,7 @@ function MapView() {
                 glyphs: 'https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf',
             },
             center: [71.4704, 51.1605],
-            zoom: 11,
+            zoom: INITIAL_ZOOM,
             maxBounds: [[70.37, 50.77], [72.39, 51.48]],
         })
         mapRef.current = map

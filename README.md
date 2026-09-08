@@ -18,7 +18,7 @@ against sun exposure.
 ```
  Browser (React + MapLibre)
    │  POST /api/route  {origin, dest, departure, shade_preference}
-   │  GET  /api/shadows?bbox=…&t=…
+   │  (shadows are static .pmtiles, built ahead of time — see below)
    ▼
  FastAPI (uvicorn :8000)
    ▼
@@ -228,14 +228,20 @@ POST /api/route
   "baseline":       { "distance_m": 1520, "shade_fraction": 0.31 }
 }
 
-GET /api/shadows?bbox=…&t=…
-→ <GeoJSON FeatureCollection of shadow polygons>
-
 GET /api/health
 ```
 
-Shadows and routes both reach MapLibre as GeoJSON sources, so the map layer
-stays dumb — moving the time slider swaps source data, nothing more.
+Routes reach MapLibre as GeoJSON. Shadows do not, and deliberately so: the date
+is fixed and only 16 hours of the day have sun, so there are just 16 shadow
+fields and none of them ever change. `scripts/export_shadow_tiles.py` builds
+each one into its own vector tileset ahead of time, and the browser reads them
+the way it reads roads.
+
+The map holds one source and one layer per hour, and the time slider only
+changes which layer is visible. Nothing is computed on demand, so shadows are
+already drawn wherever you pan and at every zoom, city-wide. All 16 tilesets
+cost about 324 KB to open, because pmtiles is read by byte range — only the
+tiles actually on screen are ever fetched.
 
 ## Layout
 
@@ -244,6 +250,8 @@ backend/
   scripts/
     height_coverage.py       measure OSM height coverage + prior accuracy
     export_survey_queue.py   emit the buildings worth surveying, by priority
+    export_fixtures.py       write shadow GeoJSON fixtures for the frontend
+    export_shadow_tiles.py   one .pmtiles shadow layer per daylight hour
   src/backend/
     main.py                  FastAPI app, CORS, routers
     config.py                bbox, cache dir, defaults, timezone
@@ -282,6 +290,13 @@ Frontend:
 
 ```bash
 cd frontend && npm install && npm run dev
+```
+
+Shadow tiles (needs `brew install tippecanoe`; takes a couple of minutes, and
+only has to be redone if the date, the heights, or the footprints change):
+
+```bash
+cd backend && uv run python scripts/export_shadow_tiles.py
 ```
 
 Data analysis:

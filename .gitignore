@@ -21,3 +21,5 @@ frontend/public/*.pmtiles
 .DS_Store
 .idea/
 .vscode/
+# Precomputed shadow tiles (regenerable: scripts/export_shadow_tiles.py)
+frontend/public/shadows/
