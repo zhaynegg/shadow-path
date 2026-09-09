@@ -2,7 +2,9 @@ import datetime as dt
 
 import geopandas as gpd
 import numpy as np
+import shapely
 from shapely.affinity import translate
+from shapely.geometry import Polygon
 
 # Low sun makes h/tan(altitude) run away; past this the polygon is meaningless
 # and the union gets expensive. See the latitude table in the README.
@@ -16,8 +18,10 @@ SIMPLIFY_M = 1.0
 def cast_shadow(geom, height_m: float, altitude: float, azimuth: float):
     """Project one footprint's shadow as a single polygon.
 
-    The shadow is the convex hull of the footprint and a copy of it translated
-    away from the sun -- the building, its shadow, and the band swept between.
+    The shadow is the ground the footprint sweeps as it slides away from the
+    sun: the building, its translated copy, and the band each edge drags
+    between the two. Sweeping rather than hulling is what keeps courtyards
+    and notches open -- a convex hull fills them in at every sun angle.
 
     Returns None when the sun is at or below the horizon: the shadow is
     unbounded there, and everything is in shade anyway.
@@ -30,12 +34,19 @@ def cast_shadow(geom, height_m: float, altitude: float, azimuth: float):
     # Compass bearing of the shadow: directly away from the sun. Bearings run
     # clockwise from north, so north is the cosine axis and east the sine one.
     bearing = np.radians(azimuth + 180.0)
-    moved = translate(
-        geom,
-        xoff=length * np.sin(bearing),
-        yoff=length * np.cos(bearing),
-    )
-    return geom.union(moved).convex_hull
+    dx = length * np.sin(bearing)
+    dy = length * np.cos(bearing)
+
+    parts = [geom, translate(geom, xoff=dx, yoff=dy)]
+    polys = geom.geoms if geom.geom_type == "MultiPolygon" else [geom]
+    for poly in polys:
+        for ring in (poly.exterior, *poly.interiors):
+            coords = list(ring.coords)
+            parts.extend(
+                Polygon([a, b, (b[0] + dx, b[1] + dy), (a[0] + dx, a[1] + dy)])
+                for a, b in zip(coords, coords[1:])
+            )
+    return shapely.union_all(parts)
 
 
 def shadow_field(gdf: gpd.GeoDataFrame, altitude: float, azimuth: float):
