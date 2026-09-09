@@ -1,7 +1,15 @@
 import datetime as dt
 from pathlib import Path
 
-CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "cache"
+DATA_DIR = Path(__file__).resolve().parents[3] / "data"
+
+# Regenerable and large: .gitignore carves this out entirely.
+CACHE_DIR = DATA_DIR / "cache"
+
+# Hand-entered storey counts, the opposite of regenerable -- no script can
+# rebuild somebody counting floors off imagery. Lives outside the cache so it
+# is tracked, and so nothing that clears the cache can take it with it.
+HEIGHT_OVERRIDES = DATA_DIR / "height_overrides.csv"
 RADIUS = 2000
 TZ = dt.timezone(dt.timedelta(hours=5))
 DATE = dt.date(2026, 6, 21)
