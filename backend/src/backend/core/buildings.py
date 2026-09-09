@@ -15,6 +15,16 @@ from backend.config import HEIGHT_OVERRIDES, LAT, LON
 # Assumed storey height, for buildings tagged with levels but no height.
 LEVEL_HEIGHT = 3.2
 
+# Footprint size classes for the height prior. Same cuts as
+# scripts/height_coverage.py, so the prior and the analysis of it agree.
+SIZE_BINS = [0, 150, 500, 1500, np.inf]
+SIZE_LABELS = ["s", "m", "l", "xl"]
+
+# How many known buildings a (tag, size) group needs before its median is worth
+# believing. At 10 the prior still reaches 97% of the untagged buildings, and
+# the 66 groups it drops were resting on a handful of examples each.
+MIN_GROUP = 10
+
 
 def parse_numeric(value: object) -> float:
     """Pull a leading number out of a messy OSM tag ('12', '12 m', '3,5')."""
@@ -44,6 +54,41 @@ def load_overrides(path: Path) -> dict[tuple[str, int], float]:
     return {key: value for key, value in zip(keys, levels) if not np.isnan(value)}
 
 
+def size_bin(gdf: gpd.GeoDataFrame) -> pd.Series:
+    """Footprint area as a coarse size class. Needs a projected CRS (metres)."""
+    return pd.cut(gdf.geometry.area, SIZE_BINS, labels=SIZE_LABELS)
+
+
+def level_priors(
+    gdf: gpd.GeoDataFrame, min_group: int = MIN_GROUP
+) -> tuple[dict[tuple[str, str], float], dict[str, float]]:
+    """Typical storey counts, learned from the buildings OSM does know about.
+
+    Returns medians per (building tag, size class) and, as a second chance for
+    combinations too thin to trust, medians per tag alone. A `school` the size
+    of a house is a better guess from schools than from the city at large.
+
+    Groups below `min_group` are dropped -- a median over three buildings is
+    noise wearing a number's clothes.
+    """
+    known = pd.DataFrame(
+        {
+            "tag": gdf["building"].astype(str),
+            "bin": size_bin(gdf),
+            "levels": gdf["building:levels"].map(parse_numeric),
+        }
+    )
+    # Storeys outside this range are typos, not buildings. NaN fails the test
+    # too, which is how the unknown ones drop out.
+    known = known[known["levels"].between(1, 60)]
+
+    # observed=True or the categorical bins produce every tag x bin pair that
+    # could exist, thousands of them empty.
+    grouped = known.groupby(["tag", "bin"], observed=True)["levels"]
+    by_group = grouped.median()[grouped.size() >= min_group]
+    return by_group.to_dict(), known.groupby("tag")["levels"].median().to_dict()
+
+
 def load_buildings(
     cache_dir: Path,
     radius: float | None = None,
@@ -55,13 +100,19 @@ def load_buildings(
     radius only when the caller genuinely works in one small place, as routing
     does; the map asks by viewport instead, through `in_view`.
 
-    Height falls back through four sources, and `height_source` records which
-    one won: a hand-entered override, then the `height` tag, then
-    `building:levels` times a storey height, then a single storey. Most of
-    Astana carries none of the first three, so the last fallback covers the
-    majority -- which is exactly what `height_source` is there to make visible.
+    Height falls back through five sources, and `height_source` records which
+    one won: a hand-entered override, the `height` tag, `building:levels`, a
+    prior learned from similar buildings, and finally a single storey. Only the
+    first three are measurements; `prior` and `fallback` are guesses, and the
+    column exists so you can always ask how much of a map rests on them.
     """
     gdf = gpd.read_parquet(cache_dir / "astana_buildings.parquet")
+
+    # Learn from the whole city, before any clip. Derived after one, a routing
+    # call for a small disc would build city-wide priors out of whichever few
+    # thousand buildings happened to fall inside it -- silently, and differently
+    # for every caller.
+    by_group, by_tag = level_priors(gdf)
 
     if radius is not None:
         # The parquet is in a projected CRS (metres), so reproject the centre to
@@ -80,10 +131,15 @@ def load_buildings(
 
     # Best source first. Overrides outrank even a `height` tag: surveying a
     # building by hand is something you only do to correct what OSM says.
+    tags = gdf["building"].astype(str)
+    prior = pd.Series(list(zip(tags, size_bin(gdf))), index=gdf.index).map(by_group)
+    prior = prior.fillna(tags.map(by_tag))
+
     candidates = {
         "override": surveyed * LEVEL_HEIGHT,
         "tag": gdf["height"].map(parse_numeric),
         "levels": gdf["building:levels"].map(parse_numeric) * LEVEL_HEIGHT,
+        "prior": prior * LEVEL_HEIGHT,
     }
 
     height = pd.Series(np.nan, index=gdf.index)
