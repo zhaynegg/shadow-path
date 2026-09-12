@@ -6,7 +6,10 @@ import { layers, GRAYSCALE } from '@protomaps/basemaps'
 import TimeSlider from './controls/TimeSlider'
 import ShadeSlider from './controls/ShadeSlider'
 import RouteSummary from './RouteSummary'
-import { fetchRoute, type LatLon, type LineGeometry, type RoutePlan } from '../api/client'
+import {
+    fetchRoute, fetchShadowManifest,
+    type LatLon, type LineGeometry, type RoutePlan, type ShadowManifest,
+} from '../api/client'
 
 const protocol = new Protocol({ metadata: true })
 
@@ -27,31 +30,26 @@ const BASELINE_COLOUR = '#9ca3af'
 
 const EMPTY = { type: 'FeatureCollection' as const, features: [] }
 
-// One precomputed tileset per hour, from backend/scripts/export_shadow_tiles.py.
-// Outside these hours the sun is below the horizon and no file exists.
-const FIRST_LIGHT = 5
-const LAST_LIGHT = 20
-// The slider still runs the whole 24 hours, so the clock can be moved to an
-// hour no tileset covers. One predicate decides that, and both the layers and
-// the notice below read it -- two rules would eventually disagree.
-const isDaylight = (hour: number) => hour >= FIRST_LIGHT && hour <= LAST_LIGHT
-const DAYLIGHT_HOURS = HOURS.filter(isDaylight)
+// Which hours have a tileset comes from the manifest, because it is a property
+// of the date the tiles were built for -- 16 hours in June, 8 in December. The
+// slider still runs the whole 24, so it can always be moved somewhere the sun
+// is down; that is a real state of the world, not an error.
+const isDaylight = (hour: number, manifest: ShadowManifest | null) =>
+    manifest ? manifest.hours.includes(hour) : true
 
-// Open on the city's own clock, not the viewer's -- the shadows are Astana's
-// whoever is looking at them. Clamped into daylight because the hours outside
-// it have no tileset: land on one and the map opens bare, which reads as
-// broken rather than as nightfall.
-const INITIAL_HOUR = Math.min(
-    Math.max(
-        Number(new Intl.DateTimeFormat('en-US', {
-            timeZone: 'Asia/Almaty',
-            hour: 'numeric',
-            hourCycle: 'h23',
-        }).format(new Date())),
-        FIRST_LIGHT,
-    ),
-    LAST_LIGHT,
-)
+// The city's own clock, not the viewer's -- the shadows are Astana's whoever is
+// looking at them.
+const cityHour = () => Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Almaty',
+    hour: 'numeric',
+    hourCycle: 'h23',
+}).format(new Date()))
+
+// Open inside daylight: land outside it and the map opens bare, which reads as
+// broken rather than as nightfall. `hours` is sorted, so the ends are the
+// first and last light of whatever date the tiles are for.
+const clampToDaylight = (hour: number, hours: number[]) =>
+    hours.length ? Math.min(Math.max(hour, hours[0]), hours[hours.length - 1]) : hour
 
 // Every hour gets its own source and layer, and changing the clock only flips
 // which one is visible. Pointing one source at a new file means asking maplibre
@@ -62,8 +60,6 @@ const shadowTiles = (hour: number) =>
 const shadowSource = (hour: number) => `shadows-${hour}`
 const shadowLayer = (hour: number) => `shadow-${hour}`
 
-// The layer name inside every tileset, set by --layer in the export script.
-const SHADOW_LAYER = 'shadows'
 const SHADOW_COLOUR = '#4a4a68'
 const SHADOW_OPACITY = 0.3
 
@@ -79,25 +75,53 @@ function MapView() {
     const containerRef = useRef<HTMLDivElement>(null)
     const mapRef = useRef<maplibregl.Map | null>(null)
 
-    const [hour, setHour] = useState(INITIAL_HOUR)
+    // The hour the style was built around. The style is built once, from the
+    // manifest, so this is read there rather than recomputed -- an hour that
+    // ticked over in between would leave the slider and the map disagreeing.
+    const initialHourRef = useRef<number | null>(null)
+
+    const [manifest, setManifest] = useState<ShadowManifest | null>(null)
+    const [manifestError, setManifestError] = useState<string | null>(null)
+    const [hour, setHour] = useState(cityHour)
     const [alpha, setAlpha] = useState(INITIAL_ALPHA)
     const [points, setPoints] = useState<LatLon[]>([])
     const [plan, setPlan] = useState<RoutePlan | null>(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
+    // --- what the tiles are, before any of them can be drawn ---------------
+    useEffect(() => {
+        const controller = new AbortController()
+
+        fetchShadowManifest(controller.signal)
+            .then(loaded => {
+                const start = clampToDaylight(cityHour(), loaded.hours)
+                initialHourRef.current = start
+                setManifest(loaded)
+                setHour(start)
+            })
+            .catch((err: Error) => {
+                // An abort is us cancelling on purpose, not a failure.
+                if (err.name !== 'AbortError') setManifestError(err.message)
+            })
+
+        return () => controller.abort()
+    }, [])
+
     // --- shadows follow the clock ------------------------------------------
     useEffect(() => {
         const map = mapRef.current
 
-        // getLayer is undefined until the style has loaded, and until then the
-        // style is already showing INITIAL_HOUR -- nothing to correct.
-        if (!map?.getLayer(shadowLayer(FIRST_LIGHT))) return
+        // The shadow layers arrive with the manifest, and getLayer is undefined
+        // until the style holding them has loaded. Until then the style is
+        // already showing the hour it was built around -- nothing to correct.
+        if (!map || !manifest?.hours.length) return
+        if (!map.getLayer(shadowLayer(manifest.hours[0]))) return
 
         const timer = setTimeout(() => {
             // At night no hour matches, every layer hides, and the map is bare
             // -- which is the right picture when the sun is down.
-            for (const candidate of DAYLIGHT_HOURS) {
+            for (const candidate of manifest.hours) {
                 map.setLayoutProperty(shadowLayer(candidate), 'visibility',
                     candidate === hour ? 'visible' : 'none')
             }
@@ -105,11 +129,13 @@ function MapView() {
 
         // A drag across the slider passes through hours nobody stops on.
         return () => clearTimeout(timer)
-    }, [hour])
+    }, [hour, manifest])
 
     // --- ask the backend for a route ---------------------------------------
     useEffect(() => {
-        if (points.length < 2) {
+        // No manifest means no map to click on, so this is belt and braces --
+        // but the date it carries is not optional to the request below.
+        if (!manifest || points.length < 2) {
             setPlan(null)
             setError(null)
             return
@@ -118,7 +144,9 @@ function MapView() {
         const controller = new AbortController()
         const timer = setTimeout(() => {
             setLoading(true)
-            fetchRoute({ origin: points[0], destination: points[1], hour, alpha }, controller.signal)
+            fetchRoute(
+                { origin: points[0], destination: points[1], date: manifest.date, hour, alpha },
+                controller.signal)
                 .then(result => {
                     setPlan(result)
                     setError(null)
@@ -138,7 +166,7 @@ function MapView() {
             clearTimeout(timer)
             controller.abort()
         }
-    }, [points, hour, alpha])
+    }, [points, hour, alpha, manifest])
 
     // --- draw whatever came back -------------------------------------------
     useEffect(() => {
@@ -161,9 +189,12 @@ function MapView() {
         return () => markers.forEach(marker => marker.remove())
     }, [points])
 
-    // --- build the map once ------------------------------------------------
+    // --- build the map once the manifest says what to build ----------------
     useEffect(() => {
-        if (!containerRef.current) return
+        // The shadow sources are part of the style, and the style is built once.
+        // Waiting costs one small same-origin fetch; guessing costs a map that
+        // asks for tilesets the current date has no sun for.
+        if (!containerRef.current || !manifest) return
 
         const map = new maplibregl.Map({
             container: containerRef.current,
@@ -177,7 +208,7 @@ function MapView() {
                     // Shadows are tiles like the basemap, not a query: the
                     // browser pulls only the ones on screen, and they are
                     // already drawn when you arrive.
-                    ...Object.fromEntries(DAYLIGHT_HOURS.map(hour => [
+                    ...Object.fromEntries(manifest.hours.map(hour => [
                         shadowSource(hour),
                         { type: 'vector' as const, url: shadowTiles(hour) },
                     ])),
@@ -186,13 +217,15 @@ function MapView() {
                 },
                 layers: [
                     ...layers('protomaps', GRAYSCALE),
-                    ...DAYLIGHT_HOURS.map(hour => ({
+                    ...manifest.hours.map(hour => ({
                         id: shadowLayer(hour),
                         type: 'fill' as const,
                         source: shadowSource(hour),
-                        'source-layer': SHADOW_LAYER,
+                        // The layer name inside the tilesets, set by --layer in
+                        // the export script that also wrote this manifest.
+                        'source-layer': manifest.layer,
                         layout: {
-                            visibility: (hour === INITIAL_HOUR ? 'visible' : 'none') as 'visible' | 'none',
+                            visibility: (hour === initialHourRef.current ? 'visible' : 'none') as 'visible' | 'none',
                         },
                         paint: {
                             'fill-color': SHADOW_COLOUR,
@@ -256,7 +289,7 @@ function MapView() {
             map.remove()
             mapRef.current = null
         }
-    }, []) // [] means "run this once, when the component first appears."
+    }, [manifest]) // Runs once: the manifest is fetched once and never refetched.
 
     return (
         <div style={{ position: 'relative', height: '100vh' }}>
@@ -274,10 +307,15 @@ function MapView() {
                 {/* Past dusk every shadow layer hides and the map goes bare. That is
                     the honest picture, but an empty map reads as a failure unless
                     something says why it is empty. */}
-                {!isDaylight(hour) && (
+                {!isDaylight(hour, manifest) && (
                     <div style={{ color: '#6b7280' }}>
                         The sun is down over Astana. Nothing casts a shadow at this hour.
                     </div>
+                )}
+                {/* Without a manifest there is no map at all, so say so rather
+                    than leaving an empty page to be read as a slow load. */}
+                {manifestError && (
+                    <div style={{ color: '#b91c1c' }}>{manifestError}</div>
                 )}
                 <ShadeSlider value={alpha} onChange={setAlpha} />
                 <button

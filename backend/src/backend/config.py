@@ -12,7 +12,17 @@ CACHE_DIR = DATA_DIR / "cache"
 HEIGHT_OVERRIDES = DATA_DIR / "height_overrides.csv"
 RADIUS = 2000
 TZ = dt.timezone(dt.timedelta(hours=5))
-DATE = dt.date(2026, 6, 21)
+
+
+def today() -> dt.date:
+    """Today in Astana, not on whatever machine is running this.
+
+    The city's day starts five hours before UTC's, so from 19:00 UTC it has
+    already rolled over. Anything reading its own clock instead -- a CI runner,
+    a server in another region -- spends every evening a day behind.
+    """
+    return dt.datetime.now(TZ).date()
+
 
 # City centre. The load radius is measured from here, and it is the same point
 # the sun position is computed for.
