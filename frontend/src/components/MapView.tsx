@@ -10,11 +10,10 @@ import { fetchRoute, type LatLon, type LineGeometry, type RoutePlan } from '../a
 
 const protocol = new Protocol({ metadata: true })
 
-// Every local hour the backend will answer for. Vite proxies /api to the
+// Every hour of the Astana day the backend will answer for. Vite proxies /api
 // backend in dev (see vite.config.ts), so this stays same-origin.
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour)
 const HOUR_LABELS = HOURS.map(hour => `${String(hour).padStart(2, '0')}:00`)
-const INITIAL_HOUR = 12
 const INITIAL_ALPHA = 6
 const INITIAL_ZOOM = 14
 
@@ -32,7 +31,27 @@ const EMPTY = { type: 'FeatureCollection' as const, features: [] }
 // Outside these hours the sun is below the horizon and no file exists.
 const FIRST_LIGHT = 5
 const LAST_LIGHT = 20
-const DAYLIGHT_HOURS = HOURS.filter(hour => hour >= FIRST_LIGHT && hour <= LAST_LIGHT)
+// The slider still runs the whole 24 hours, so the clock can be moved to an
+// hour no tileset covers. One predicate decides that, and both the layers and
+// the notice below read it -- two rules would eventually disagree.
+const isDaylight = (hour: number) => hour >= FIRST_LIGHT && hour <= LAST_LIGHT
+const DAYLIGHT_HOURS = HOURS.filter(isDaylight)
+
+// Open on the city's own clock, not the viewer's -- the shadows are Astana's
+// whoever is looking at them. Clamped into daylight because the hours outside
+// it have no tileset: land on one and the map opens bare, which reads as
+// broken rather than as nightfall.
+const INITIAL_HOUR = Math.min(
+    Math.max(
+        Number(new Intl.DateTimeFormat('en-US', {
+            timeZone: 'Asia/Almaty',
+            hour: 'numeric',
+            hourCycle: 'h23',
+        }).format(new Date())),
+        FIRST_LIGHT,
+    ),
+    LAST_LIGHT,
+)
 
 // Every hour gets its own source and layer, and changing the clock only flips
 // which one is visible. Pointing one source at a new file means asking maplibre
@@ -252,6 +271,14 @@ function MapView() {
                 display: 'flex', flexDirection: 'column', gap: 10,
             }}>
                 <TimeSlider labels={HOUR_LABELS} value={hour} onChange={setHour} />
+                {/* Past dusk every shadow layer hides and the map goes bare. That is
+                    the honest picture, but an empty map reads as a failure unless
+                    something says why it is empty. */}
+                {!isDaylight(hour) && (
+                    <div style={{ color: '#6b7280' }}>
+                        The sun is down over Astana. Nothing casts a shadow at this hour.
+                    </div>
+                )}
                 <ShadeSlider value={alpha} onChange={setAlpha} />
                 <button
                     onClick={() => setPoints([])}
