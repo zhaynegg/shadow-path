@@ -65,7 +65,10 @@ jobs:
       - name: Put tippecanoe on PATH
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - uses: astral-sh/setup-uv@v10
+      # Pinned to a full version, not a major: setup-uv does not publish a
+      # bare v10 tag the way actions/* do, and a nightly job is the last place
+      # you want an action changing underneath you unannounced.
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
 
