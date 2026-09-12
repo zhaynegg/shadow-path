@@ -19,6 +19,8 @@ data/cache/*
 # also pins the OSM snapshot, so a daily rebuild changes the tiles when the
 # date changes and not when somebody edits a building in Astana.
 !data/cache/astana_buildings.parquet
+# Same reasoning for the trees, and it is a much smaller file.
+!data/cache/astana_trees.parquet
 frontend/public/*.pmtiles
 
 # Env & editors

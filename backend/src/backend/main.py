@@ -18,6 +18,7 @@ from backend.core.routing import MAX_ALPHA, plan
 from backend.core.scoring import score_edges
 from backend.core.shadows import MAX_SHADOW_M, shadow_field
 from backend.core.solar import sun_position
+from backend.core.trees import shading_geometry
 
 # The map draws shadows from precomputed tiles built by
 # scripts/export_shadow_tiles.py, so nothing here serves them. What is left is
@@ -30,6 +31,10 @@ app = FastAPI()
 # unbounded range is an unbounded amount of work a caller can ask for. A year
 # either side covers any tiles the map could reasonably be showing.
 MAX_DATE_DRIFT = dt.timedelta(days=366)
+
+# Everything close enough to a routed street to shade it. One constant so the
+# buildings and the trees are clipped to the same disc.
+SHADING_RADIUS = GRAPH_RADIUS + MAX_SHADOW_M
 
 
 class RouteRequest(BaseModel):
@@ -73,7 +78,7 @@ def routing_buildings() -> gpd.GeoDataFrame:
     Treat the result as read-only. It is the same object every time, so a
     mutation here would leak into every later response.
     """
-    return load_buildings(CACHE_DIR, GRAPH_RADIUS + MAX_SHADOW_M)
+    return load_buildings(CACHE_DIR, SHADING_RADIUS)
 
 @lru_cache(maxsize=1)
 def graph():
@@ -90,7 +95,10 @@ def scored_edges(date: dt.date, hour: int):
     """
     when = dt.datetime.combine(date, dt.time(hour), tzinfo=TZ)
     altitude, azimuth = sun_position(LAT, LON, when)
-    shadow = shadow_field(routing_buildings(), altitude, azimuth) if altitude > 0 else None
+    # Same frame the tiles were built from, so the route cannot be weighted by
+    # shade the map does not draw.
+    casters = shading_geometry(routing_buildings(), date, CACHE_DIR, SHADING_RADIUS)
+    shadow = shadow_field(casters, altitude, azimuth) if altitude > 0 else None
     return score_edges(ox.graph_to_gdfs(graph(), nodes=False), shadow)
 
 

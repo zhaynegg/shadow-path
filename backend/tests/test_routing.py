@@ -1,3 +1,5 @@
+import datetime as dt
+
 import geopandas as gpd
 import networkx as nx
 import osmnx as ox
@@ -5,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 from shapely.geometry import Point
 
-from backend.config import CRS, LAT, LON
+from backend.config import CRS, LAT, LON, today
 from backend.core.routing import MAX_ALPHA, edge_weights, route
 from backend.main import RouteRequest
 
@@ -110,8 +112,27 @@ def test_opposite_alphas_are_mirror_images():
 
 
 def test_request_model_takes_signed_alpha_within_bounds():
-    assert RouteRequest(origin=(0, 0), destination=(1, 1), alpha=-3.0).alpha == -3.0
+    here = {"origin": (0, 0), "destination": (1, 1), "date": today()}
+    assert RouteRequest(**here, alpha=-3.0).alpha == -3.0
 
     for rejected in (-MAX_ALPHA - 1, MAX_ALPHA + 1, float("nan"), float("inf")):
         with pytest.raises(ValidationError):
-            RouteRequest(origin=(0, 0), destination=(1, 1), alpha=rejected)
+            RouteRequest(**here, alpha=rejected)
+
+
+def test_request_model_requires_a_date_near_today():
+    """The date is what keeps the router and the map on the same sun.
+
+    Required rather than defaulted: a default is the server guessing, which is
+    the thing sending it was meant to stop. Bounded because every distinct date
+    is a fresh shadow field, so an open range is unbounded work to ask for.
+    """
+    here = {"origin": (0, 0), "destination": (1, 1)}
+    assert RouteRequest(**here, date=today()).date == today()
+
+    with pytest.raises(ValidationError):
+        RouteRequest(**here)
+
+    for far in (today() + dt.timedelta(days=400), today() - dt.timedelta(days=400)):
+        with pytest.raises(ValidationError):
+            RouteRequest(**here, date=far)

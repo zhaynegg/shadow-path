@@ -4,10 +4,11 @@ Shade-aware pedestrian routing for **Astana**. Given an origin, a destination,
 and a departure time, find the walk that keeps you out of the sun — or in it —
 and show what that detour costs against the plain shortest path.
 
-> **Status:** scaffolding plus a data feasibility study. The backend (FastAPI +
-> uv) and frontend (React 19 / TypeScript / Vite / MapLibre) are set up and the
-> `/api` dev proxy is wired; no application code exists yet. The data findings
-> below are measured, not assumed — see [Data](#data).
+> **Status:** working end to end for Astana. The map opens on the city's
+> current hour, draws that day's shadows city-wide, and routes against them. A
+> nightly GitHub Actions job rebuilds the tiles for the new date. Not deployed:
+> CI uploads the tiles as a workflow artifact and nothing serves them yet. The
+> data findings below are measured, not assumed — see [Data](#data).
 
 ## How it works
 
@@ -17,7 +18,7 @@ against sun exposure.
 
 ```
  Browser (React + MapLibre)
-   │  POST /api/route  {origin, dest, departure, shade_preference}
+   │  POST /api/route  {origin, destination, date, hour, alpha}
    │  (shadows are static .pmtiles, built ahead of time — see below)
    ▼
  FastAPI (uvicorn :8000)
@@ -31,8 +32,9 @@ against sun exposure.
  │  routing.py   weighted A* over networkx    │
  └────────────────────┬───────────────────────┘
                       ▼
-            data/cache/  (graphml, geoparquet,
-            per-time-bucket edge scores)
+            data/cache/  (graphml, geoparquet)
+            edge scores are memoised per (date, hour),
+            in process — nothing on disk
 ```
 
 ### 1. Ingest — once per city, cached
@@ -45,7 +47,12 @@ Heights are resolved here, once, and baked into the cache with a provenance
 column — see [Height resolution](#height-resolution).
 
 The graph persists as GraphML and the buildings as GeoParquet under
-`data/cache/`, which `.gitignore` carves out as "regenerable, large."
+`data/cache/`, which `.gitignore` carves out as "regenerable, large" — with one
+exception. `astana_buildings.parquet` is tracked, because the nightly tile build
+runs on a fresh CI runner with no cache, and nothing in this repo can refetch it
+(the Overpass call lives in `height_coverage.py`, which the export never calls).
+Tracking it also pins the OSM snapshot, so the tiles change when the date
+changes rather than when somebody edits a building in Astana.
 
 ### 2. Shadow geometry — per timestamp
 
@@ -100,9 +107,15 @@ straight-line A* heuristic admissible at any α.
 
 Steps 2 and 3 are expensive and time-dependent. Step 1 is expensive and isn't.
 
-**Quantize departure time into 15-minute buckets and precompute per-bucket edge
-scores.** A route request then becomes a graph search over cached weights —
-milliseconds. Otherwise you recompute a citywide polygon union per request.
+**Quantize departure time into whole hours and cache the scored edges per
+`(date, hour)`.** A route request then becomes a graph search over cached
+weights — milliseconds. Otherwise you recompute a citywide polygon union per
+request.
+
+The date belongs in that key, not just the hour. 13:00 in June and 13:00 in
+December are different suns — mean shade across the walk network is 0.033
+against 0.291 — so an hour-only cache serves one for the other the first time
+the map rolls forward a day.
 
 Corollary: scope to Astana's bbox. Arbitrary origins would mean OSM downloads in
 the request path.
@@ -224,34 +237,44 @@ should be softened anyway.
 ```
 POST /api/route
 {
-  "origin":           [lat, lon],
-  "destination":      [lat, lon],
-  "departure":        "2026-09-01T15:30:00+06:00",
-  "shade_preference": 0.7
+  "origin":      [lat, lon],
+  "destination": [lat, lon],
+  "date":        "2026-09-12",
+  "hour":        16,
+  "alpha":       6.0
 }
 →
 {
-  "route":          <GeoJSON LineString>,
-  "distance_m":     1840,
-  "duration_s":     1360,
-  "shade_fraction": 0.72,
-  "confidence":     0.81,
-  "baseline":       { "distance_m": 1520, "shade_fraction": 0.31 }
+  "route":    { "distance_m": 2550, "shade_fraction": 0.37, "geometry": <LineString> },
+  "baseline": { "distance_m": 1990, "shade_fraction": 0.00, "geometry": <LineString> }
 }
 
 GET /api/health
 ```
 
-Routes reach MapLibre as GeoJSON. Shadows do not, and deliberately so: the date
-is fixed and only 16 hours of the day have sun, so there are just 16 shadow
-fields and none of them ever change. `scripts/export_shadow_tiles.py` builds
-each one into its own vector tileset ahead of time, and the browser reads them
-the way it reads roads.
+`date` is sent by the client, not read from the server's clock. It comes from
+the tile manifest, so the router weights streets by the same sun the map drew:
+if a nightly rebuild fails, both stay a day behind together instead of quietly
+disagreeing. It is bounded to within a year of today — every distinct date is a
+fresh shadow field over the routing footprints, and an unbounded range is an
+unbounded amount of work a caller can ask for.
+
+Routes reach MapLibre as GeoJSON. Shadows do not, and deliberately so: within a
+day the sun repeats, so an hour's shadow field never changes once it is built.
+`scripts/export_shadow_tiles.py` builds each daylight hour into its own vector
+tileset ahead of time, and the browser reads them the way it reads roads.
+
+How many tilesets exist is a property of the date, not a constant — 16 in June,
+13 in mid-September, 8 at the winter solstice. The script writes what it
+produced to `shadows/index.json`: the date, the hours, the layer name. The
+frontend builds its sources from that manifest, because a daylight window
+hardcoded on the other side is right for exactly one date, and asking for
+`05.pmtiles` in December is a 404.
 
 The map holds one source and one layer per hour, and the time slider only
 changes which layer is visible. Nothing is computed on demand, so shadows are
-already drawn wherever you pan and at every zoom, city-wide. All 16 tilesets
-cost about 324 KB to open, because pmtiles is read by byte range — only the
+already drawn wherever you pan and at every zoom, city-wide. Opening every
+tileset costs a few hundred KB, because pmtiles is read by byte range — only the
 tiles actually on screen are ever fetched.
 
 ## Layout
@@ -260,38 +283,40 @@ tiles actually on screen are ever fetched.
 backend/
   scripts/
     height_coverage.py       measure OSM height coverage + prior accuracy
+    height_neighbours.py     do the neighbours predict height? (spatial CV)
     export_survey_queue.py   emit the buildings worth surveying, by priority
     export_fixtures.py       write shadow GeoJSON fixtures for the frontend
-    export_shadow_tiles.py   one .pmtiles shadow layer per daylight hour
+    export_shadow_tiles.py   a .pmtiles layer per daylight hour, + index.json
+    fetch_trees.py           cache OSM tree rows and points
   src/backend/
-    main.py                  FastAPI app, CORS, routers
-    config.py                bbox, cache dir, defaults, timezone
-    api/
-      routes.py              endpoints
-      schemas.py             pydantic request/response models
+    main.py                  FastAPI app: /api/route, /api/health
+    config.py                paths, radius, timezone, city centre, today()
     core/
       graph.py               OSM walk network load + cache
-      buildings.py           footprints + HeightSource chain
-      heights.py             prior, overrides, provenance
+      buildings.py           footprints + height chain + provenance
       solar.py               pysolar wrapper: (lat, lon, ts) → altitude, azimuth
       shadows.py             footprints + sun → unioned, indexed polygons
+      trees.py               canopy polygons + the leaf-on season
       scoring.py             edge sub-segmentation + shade fraction
       routing.py             weighted A*, baseline route, stats
-      cache.py               disk cache keyed by (place, time-bucket)
-    models.py                Segment, RouteResult, ShadowFrame
+  tests/
+    test_scoring.py, test_routing.py
 
 frontend/src/
-  api/client.ts              typed fetch, mirrors schemas.py
+  api/client.ts              typed fetch; mirrors main.py and the tile manifest
   components/
-    MapView.tsx
-    layers/{Shadow,Route}Layer.tsx
-    controls/{TimeSlider,ShadeSlider,EndpointPicker}.tsx
+    MapView.tsx              map, shadow layers, route layers, the clock
     RouteSummary.tsx
-  hooks/{useRoute,useShadows}.ts
-  state/store.ts             origin, destination, time, α
+    controls/{TimeSlider,ShadeSlider}.tsx
+
+.github/workflows/
+  shadow-tiles.yml           nightly rebuild of the tiles for the current date
 
 data/
-  cache/                     gitignored: osmnx cache, geoparquet, scored graphs
+  cache/                     gitignored (osmnx cache, graphml, scored graphs)
+    astana_buildings.parquet ...except this, tracked so CI has footprints
+    astana_trees.parquet     ...and this, 101 KB of mapped trees
+  height_overrides.csv       hand-entered storey counts
   survey_queue.csv           buildings awaiting a manual storey count
 ```
 
@@ -303,12 +328,18 @@ Frontend:
 cd frontend && npm install && npm run dev
 ```
 
-Shadow tiles (needs `brew install tippecanoe`; takes a couple of minutes, and
-only has to be redone if the date, the heights, or the footprints change):
+Shadow tiles (needs `brew install tippecanoe`; about 12 s per daylight hour).
+Defaults to today in Astana, and deletes any tileset the new date has no sun
+for, so the directory always holds exactly one day:
 
 ```bash
 cd backend && uv run python scripts/export_shadow_tiles.py
+cd backend && uv run python scripts/export_shadow_tiles.py --date 2026-12-21
 ```
+
+The same command runs nightly in CI — `.github/workflows/shadow-tiles.yml`, at
+19:00 UTC, which is midnight in Astana. For now it uploads the result as a
+workflow artifact; publishing is still an open decision.
 
 Data analysis:
 
@@ -316,7 +347,7 @@ Data analysis:
 cd backend && uv run python scripts/height_coverage.py
 ```
 
-Backend (once `main.py` exists):
+Backend:
 
 ```bash
 cd backend && uv run uvicorn backend.main:app --reload --port 8000
@@ -328,18 +359,48 @@ FastAPI's `StaticFiles` or a CDN.
 
 ## Known gaps
 
-**Dependencies still to add:** `pydantic-settings`, `pytest` + `httpx`, and
-`timezonefinder` (pysolar wants UTC; Astana is UTC+5 — or hardcode it while
-single-city). `pyarrow` is already in.
+**Dependencies still to add:** `pydantic-settings`, and `httpx` for API tests.
+`pytest`, `ruff` and `scipy` are in the dev group; `pyarrow` is in the main one.
+The timezone is hardcoded to UTC+5 in `config.py` — the documented shortcut
+while this is single-city, and `timezonefinder` is what replaces it.
+
+**Nothing is deployed.** The tiles are built nightly and uploaded as an
+artifact. Publishing them needs a decision about the backend too: GitHub Pages
+is static, so `/api/route` would 404 there and routing would not work until
+FastAPI is hosted somewhere.
+
+**The API date path is untested.** `tests/` covers scoring and routing, but
+nothing exercises `RouteRequest` validation or that `scored_edges` keys on the
+date — which was a real bug, and an invisible one.
 
 **Districts aren't available.** OSM has only one of Astana's city districts as a
 boundary polygon (Сарайшық ауданы, `admin_level=8`); Есіл, Алматы, Сарыарқа,
 Байқоңыр and Нұра are absent. A district-keyed prior needs hand-drawn zones or
 a distance-to-centre proxy.
 
-**Model limits:** flat terrain, no trees, no awnings or arcades. Trees matter
-most for perceived accuracy — OSM `natural=tree` gives points that could be
-buffered into shade later. No DEM, so hills and their shadows are invisible.
+**Trees are modelled, but barely mapped.** `core/trees.py` buffers OSM
+`natural=tree` points and `natural=tree_row` lines into canopy and feeds them
+through the same `shadow_field` as buildings, gated on a leaf-on season (1 May
+to 10 Oct) — bare trees cast nothing, and phantom winter canopy would be worse
+than none, since the winter product is sun-seeking.
+
+The limit is coverage, not code. OSM has 2,909 tree features for the whole city,
+and inside the routing disc that is 1.2 km of planting against **570 km** of
+walk network: 0.1% of edges, and 0.5% added to total shadow area. Correct, and
+not yet enough to change a route.
+
+Two numbers under it are invented. **No Astana tree carries a `height` tag** —
+not one — so every canopy height is a flat 8 m constant, tagged
+`height_source="tree_default"` so the provenance column keeps its meaning. The
+crown width is a 3 m guess. A canopy height raster (ETH 10 m, Meta 1 m) is the
+only route to real coverage, and whether either resolves a single row of steppe
+street trees is unverified.
+
+Canopy is also treated as opaque, like a wall. Real tree shade is dappled, so
+what shade there is, is overstated.
+
+**Model limits:** flat terrain, no awnings or arcades. No DEM, so hills and
+their shadows are invisible.
 
 ## Attribution
 

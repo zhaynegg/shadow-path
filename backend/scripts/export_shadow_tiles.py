@@ -30,6 +30,7 @@ from backend.config import CACHE_DIR, LAT, LON, TZ, today
 from backend.core.buildings import load_buildings
 from backend.core.shadows import SIMPLIFY_M, shadow_field
 from backend.core.solar import sun_position
+from backend.core.trees import shading_geometry
 
 # Every hour uses the same layer name, so one map style can read whichever
 # tileset is currently loaded without rewriting the layer.
@@ -132,8 +133,13 @@ def main() -> None:
         raise SystemExit("tippecanoe is not on PATH -- brew install tippecanoe")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    gdf = load_buildings(args.cache_dir)
-    print(f"{len(gdf):,} buildings, {args.date}\n")
+    buildings = load_buildings(args.cache_dir)
+    # Trees join the frame here rather than per hour: whether there is a canopy
+    # is a property of the date, and the date does not change inside a run.
+    gdf = shading_geometry(buildings, args.date, args.cache_dir)
+    canopy = len(gdf) - len(buildings)
+    leaf = f" + {canopy:,} trees in leaf" if canopy else " (trees bare, out of season)"
+    print(f"{len(buildings):,} buildings{leaf}, {args.date}\n")
 
     written: dict[int, Path] = {}
     with tempfile.TemporaryDirectory() as tmp:
