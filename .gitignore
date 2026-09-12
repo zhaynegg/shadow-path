@@ -13,6 +13,12 @@ dist/
 # Cached OSM / geo data (regenerable, large)
 data/cache/*
 !data/cache/.gitkeep
+# ...except the footprints, which are tracked on purpose. A CI runner has no
+# cache, and nothing in this repo can rebuild the parquet -- the Overpass fetch
+# lives in height_coverage.py and the export script never calls it. Tracking it
+# also pins the OSM snapshot, so a daily rebuild changes the tiles when the
+# date changes and not when somebody edits a building in Astana.
+!data/cache/astana_buildings.parquet
 frontend/public/*.pmtiles
 
 # Env & editors

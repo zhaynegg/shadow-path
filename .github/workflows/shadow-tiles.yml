@@ -1,0 +1,105 @@
+# Rebuilds the shadow tiles for the current date.
+#
+# Shadow length depends on the day of the year, not just the hour: an Astana
+# noon shadow is 0.55x the building's height in June and 3.8x in December. Tiles
+# built once go stale by about 1.5% a day near the equinoxes, so they are rebuilt
+# nightly rather than pinned to a date.
+#
+# For now this only builds and uploads the result as an artifact -- publishing is
+# a separate decision, and a job that is not yet green should not be deploying.
+name: Shadow tiles
+
+on:
+  schedule:
+    # 19:00 UTC is midnight in Astana (UTC+5), so a run lands at the start of the
+    # day it is building for. Two things to know about GitHub's scheduler: runs
+    # are often late under load, sometimes by 10+ minutes, and a schedule is
+    # disabled automatically after 60 days with no commits to the repository.
+    - cron: "0 19 * * *"
+
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "YYYY-MM-DD to build for (blank = today in Astana)"
+        required: false
+        type: string
+
+# One run at a time. Nothing here is fast, and a manual run started during a
+# scheduled one would have two jobs writing the same directory.
+concurrency:
+  group: shadow-tiles
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # tippecanoe is not in the Ubuntu repositories, so it is built from
+      # source. Installing into ~/.local keeps it somewhere the runner user owns
+      # and can therefore restore a cache into -- /usr/local/bin is root's.
+      - name: Restore tippecanoe
+        id: tippecanoe
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/tippecanoe
+          # Bump this suffix to rebuild against a newer tippecanoe. Until then
+          # the cache is also what pins the version, which is the behaviour you
+          # want from something that shapes every tile you ship.
+          key: tippecanoe-v1-${{ runner.os }}
+
+      - name: Build tippecanoe
+        if: steps.tippecanoe.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libsqlite3-dev zlib1g-dev
+          git clone --depth 1 https://github.com/felt/tippecanoe.git /tmp/tippecanoe
+          make -C /tmp/tippecanoe -j"$(nproc)"
+          make -C /tmp/tippecanoe install PREFIX="$HOME/.local"
+
+      # Runs on a cache hit too, and has to be its own step: PATH written to
+      # GITHUB_PATH only takes effect in the steps that follow.
+      - name: Put tippecanoe on PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # --frozen fails rather than quietly resolving something new, so CI builds
+      # the dependency set in uv.lock or nothing. --no-dev leaves out pytest,
+      # ruff and scipy, none of which the export touches.
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync --frozen --no-dev
+
+      # The date goes through the environment rather than into the run: block.
+      # A workflow_dispatch input interpolated straight into a shell command is
+      # a script-injection hole -- whatever is typed in the box gets run.
+      - name: Build the tiles
+        working-directory: backend
+        env:
+          DATE: ${{ inputs.date }}
+        run: |
+          if [ -n "$DATE" ]; then
+            uv run python scripts/export_shadow_tiles.py --date "$DATE"
+          else
+            uv run python scripts/export_shadow_tiles.py
+          fi
+
+      # The manifest is the whole record of what a run produced. Printing it
+      # means a failure weeks from now can be read off the log.
+      - name: Show what was built
+        run: cat frontend/public/shadows/index.json
+
+      - name: Upload the tiles
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-tiles
+          path: frontend/public/shadows/
+          # These are rebuilt nightly and nothing consumes them yet, so keeping
+          # a fortnight of 59 MB uploads would only be storage.
+          retention-days: 7
