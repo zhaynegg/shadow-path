@@ -36,14 +36,14 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # tippecanoe is not in the Ubuntu repositories, so it is built from
       # source. Installing into ~/.local keeps it somewhere the runner user owns
       # and can therefore restore a cache into -- /usr/local/bin is root's.
       - name: Restore tippecanoe
         id: tippecanoe
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.local/bin/tippecanoe
           # Bump this suffix to rebuild against a newer tippecanoe. Until then
@@ -65,7 +65,7 @@ jobs:
       - name: Put tippecanoe on PATH
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
 
@@ -96,7 +96,7 @@ jobs:
         run: cat frontend/public/shadows/index.json
 
       - name: Upload the tiles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: shadow-tiles
           path: frontend/public/shadows/
