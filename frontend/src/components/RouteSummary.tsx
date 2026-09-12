@@ -5,25 +5,38 @@ type RouteSummaryProp = {
     loading: boolean,
     error: string | null,
     pointCount: number,
+    // Signed, so this panel is the one place that knows whether the walk being
+    // sold is the shady one or the sunny one. Everything below reads off it.
+    alpha: number,
 }
 
 const percent = (fraction: number) => `${Math.round(fraction * 100)}%`
 const metres = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`)
 
-function Row({ label, leg, colour }: { label: string, leg: RoutePlan['route'], colour: string }) {
+type RowProp = { label: string, leg: RoutePlan['route'], colour: string, seekingSun: boolean }
+
+function Row({ label, leg, colour, seekingSun }: RowProp) {
+    // The backend only ever measures shade. Sun is the other side of the same
+    // number, not a second measurement.
+    const share = seekingSun ? 1 - leg.shade_fraction : leg.shade_fraction
+
     return (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 6 }}>
             <span style={{ width: 10, height: 10, borderRadius: 2, background: colour, flexShrink: 0 }} />
             <span style={{ flex: 1 }}>{label}</span>
             <span style={{ fontVariantNumeric: 'tabular-nums' }}>{metres(leg.distance_m)}</span>
-            <span style={{ fontVariantNumeric: 'tabular-nums', width: 44, textAlign: 'right' }}>
-                {percent(leg.shade_fraction)} shade
+            <span style={{ fontVariantNumeric: 'tabular-nums', width: 58, textAlign: 'right' }}>
+                {percent(share)} {seekingSun ? 'sun' : 'shade'}
             </span>
         </div>
     )
 }
 
-function RouteSummary({ plan, loading, error, pointCount }: RouteSummaryProp) {
+function RouteSummary({ plan, loading, error, pointCount, alpha }: RouteSummaryProp) {
+    const seekingSun = alpha < 0
+    const wanted = seekingSun ? 'sun' : 'shade'
+    const found = seekingSun ? 'sunlit' : 'shaded'
+    const more = seekingSun ? 'sunnier' : 'shadier'
     let body
 
     if (error) {
@@ -38,16 +51,21 @@ function RouteSummary({ plan, loading, error, pointCount }: RouteSummaryProp) {
         // Deliberately not "2.3x more shade": at midday the direct route is
         // often 0% shaded, and nothing is a useful multiple of zero.
         const longer = plan.route.distance_m / plan.baseline.distance_m - 1
-        const gained = plan.route.shade_fraction - plan.baseline.shade_fraction
+        // Shade gained, or shade given up -- which is sun gained. One
+        // subtraction, read in whichever direction the walker asked for.
+        const difference = plan.route.shade_fraction - plan.baseline.shade_fraction
+        const gained = seekingSun ? -difference : difference
 
         body = (
             <>
-                <Row label="shaded route" leg={plan.route} colour="#2563eb" />
-                <Row label="direct route" leg={plan.baseline} colour="#9ca3af" />
+                <Row label={`${found} route`}
+                    leg={plan.route} colour="#2563eb" seekingSun={seekingSun} />
+                <Row label="direct route" leg={plan.baseline} colour="#9ca3af"
+                    seekingSun={seekingSun} />
                 <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid #e5e7eb' }}>
                     {gained < 0.005
-                        ? 'No shadier route exists here — both are the same walk.'
-                        : `${percent(longer)} longer, ${percent(gained)} more of the walk in shade.`}
+                        ? `No ${more} route exists here — both are the same walk.`
+                        : `${percent(longer)} longer, ${percent(gained)} more of the walk in ${wanted}.`}
                 </div>
             </>
         )

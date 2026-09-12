@@ -243,7 +243,7 @@ function MapView() {
         <div style={{ position: 'relative', height: '100vh' }}>
             <div style={{ height: '100%' }} ref={containerRef} />
 
-            <RouteSummary plan={plan} loading={loading} error={error} pointCount={points.length} />
+            <RouteSummary plan={plan} loading={loading} error={error} pointCount={points.length} alpha={alpha} />
 
             <div style={{
                 position: 'absolute', zIndex: 1, bottom: 16, left: 16, width: 260,

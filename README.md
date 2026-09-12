@@ -75,15 +75,26 @@ shade_fraction = length(segment ∩ shadow_union) / length(segment)
 A* over the networkx graph with:
 
 ```
-weight = length × (1 + α × (1 − shade_fraction))
+weight = length × (1 + |α| × unwanted)
+
+unwanted = 1 − shade_fraction   when α ≥ 0   (sunlit metres, to a shade-seeker)
+         =     shade_fraction   when α < 0   (shaded metres, to a sun-seeker)
 ```
 
 `α` is the user's preference; `α = 0` is the plain shortest path. The `α = 0`
 baseline is always computed alongside so the UI can say *"18% longer, 2.3× more
 shade"* — that comparison is the product.
 
-Keep `α` **signed**. Negative α is sun-seeking, and in Astana that is not a
+`α` is **signed**. Negative α is sun-seeking, and in Astana that is not a
 novelty mode — it's the winter product.
+
+The absolute value and the swap are not cosmetic. Written as the single line
+`1 + α × (1 − shade_fraction)`, a negative α prices a sunlit street below zero,
+and a walker could pace one back and forth forever to drive the total lower —
+there is no cheapest path left to find. A* does not detect that; it settles
+nodes assuming they can only get dearer, and answers anyway. Moving the penalty
+onto the unwanted half instead keeps every weight ≥ length, which also keeps the
+straight-line A* heuristic admissible at any α.
 
 ## The decision that shapes everything
 

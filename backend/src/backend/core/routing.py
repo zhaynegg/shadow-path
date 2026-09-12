@@ -11,6 +11,11 @@ from backend.config import CRS
 # this, the nearest node is not a reasonable stand-in for what the user meant.
 MAX_SNAP_M = 300.0
 
+# The strongest preference the slider offers, in either direction. Nothing in
+# the maths needs an upper bound -- the API takes one so that a signed alpha
+# still has something to reject, nan and inf included.
+MAX_ALPHA = 12.0
+
 
 def nearest_node(graph, lat: float, lon: float) -> int:
     """The graph node closest to a lat/lon, if one is close enough to mean it."""
@@ -28,13 +33,34 @@ def nearest_node(graph, lat: float, lon: float) -> int:
 
 
 
+def edge_weights(scored, alpha):
+    """What a metre of each edge costs a walker with this preference.
+
+    Alpha is signed: positive seeks shade, negative seeks sun. Both are the
+    same rule -- a detour is worth it in proportion to how much of the edge is
+    the wrong thing -- so the only difference is which half of the edge counts
+    as wrong.
+
+    Reading the formula literally instead -- `1 + alpha * (1 - shade)` with a
+    negative alpha -- makes a sunlit edge cost less than nothing, and then
+    "cheapest path" stops meaning anything: pacing one sunny street back and
+    forth pays out every time, so the cost has no floor to find. A* cannot see
+    that. It assumes a settled node can never get cheaper and returns a path
+    regardless. Keeping the multiplier non-negative is what leaves it a real
+    question to answer, not a matter of taste.
+    """
+    unwanted = 1 - scored["shade_fraction"] if alpha >= 0 else scored["shade_fraction"]
+    return scored["length"] * (1 + abs(alpha) * unwanted)
+
+
 def route(graph, scored, origin, destination, alpha) -> dict:
-    weights = scored["length"] * (1 + alpha * (1 - scored["shade_fraction"]))
+    weights = edge_weights(scored, alpha)
     nx.set_edge_attributes(graph, weights.to_dict(), "shade_weight")
     nx.set_edge_attributes(graph, scored["shade_fraction"].to_dict(), "shade_fraction")
 
-
-    assert alpha >= 0
+    # Straight-line metres between two nodes. Admissible for any alpha because
+    # every weight above is at least the edge's own length, which is at least
+    # the straight line it spans -- so this can never overestimate.
     def heuristic(u, v):
         return ((graph.nodes[u]["x"] - graph.nodes[v]["x"]) ** 2
         + (graph.nodes[u]["y"] - graph.nodes[v]["y"]) ** 2) ** 0.5

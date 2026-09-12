@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from backend.config import CACHE_DIR, CRS, DATE, GRAPH_RADIUS, LAT, LON, TZ
 from backend.core.buildings import load_buildings
 from backend.core.graph import load_graph
-from backend.core.routing import plan
+from backend.core.routing import MAX_ALPHA, plan
 from backend.core.scoring import score_edges
 from backend.core.shadows import MAX_SHADOW_M, shadow_field
 from backend.core.solar import sun_position
@@ -30,7 +30,12 @@ class RouteRequest(BaseModel):
     origin: tuple[float, float]
     destination: tuple[float, float]
     hour: int = Field(12, ge=0, le=23)
-    alpha: float = Field(3.0, ge=0)
+
+    # Signed: positive routes towards shade, negative towards sun, 0 is the
+    # plain shortest path. Bounded on both sides rather than left open, because
+    # the bounds are also what rejects nan and inf -- either would sail through
+    # A* and come back as a route nobody asked for.
+    alpha: float = Field(3.0, ge=-MAX_ALPHA, le=MAX_ALPHA)
 
 def line_to_geojson(line, crs) -> dict:
     frame = gpd.GeoDataFrame(geometry=[line], crs=crs).to_crs(4326)
