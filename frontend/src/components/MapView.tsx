@@ -5,7 +5,9 @@ import { Protocol } from 'pmtiles'
 import { layers, GRAYSCALE } from '@protomaps/basemaps'
 import TimeSlider from './controls/TimeSlider'
 import ShadeSlider from './controls/ShadeSlider'
+import SearchBox from './controls/SearchBox'
 import RouteSummary from './RouteSummary'
+import type { Place } from '../api/geocode'
 import {
     fetchRoute, fetchShadowManifest,
     type LatLon, type LineGeometry, type RoutePlan, type ShadowManifest,
@@ -13,6 +15,7 @@ import {
 import {
     WHOLE_HOURS, cityMinutes, isDaylight, nearestStamp, prettyDate, sliderTimes,
 } from '../lib/stamps'
+import { footprintAt } from '../lib/footprint'
 
 // What the backend last said, and which request it was saying it about. Either
 // a plan or a message, never both -- a failed request has no route to draw.
@@ -33,7 +36,24 @@ const DEBOUNCE_MS = 150
 const ROUTE_COLOUR = '#2563eb'
 const BASELINE_COLOUR = '#9ca3af'
 
+// The two ends of the walk, and the same two colours the A and B pins are drawn
+// in -- --start and --end in index.css. Deliberately not the route's blue: the
+// building you are leaving from is not part of the line you walk along, and
+// giving them one colour would say that it was.
+const START_COLOUR = '#15803d'
+const END_COLOUR = '#b91c1c'
+
 const EMPTY = { type: 'FeatureCollection' as const, features: [] }
+
+// First pick starts the walk, second finishes it, third starts over. Clicking
+// the map and searching for an address both go through here, so the two ways of
+// setting a point cannot drift into two different rules for what a pick means.
+const nextPoints = (points: LatLon[], point: LatLon): LatLon[] =>
+    points.length >= 2 ? [point] : [...points, point]
+
+// Close enough to read the street you searched for, but never a zoom out: if
+// the map is already closer than this, whoever put it there meant it.
+const SEARCH_ZOOM = 15
 
 // Every stamp gets its own source and layer, and changing the clock only flips
 // which one is visible. Pointing one source at a new file means asking maplibre
@@ -157,6 +177,51 @@ function MapView() {
 
     const times = sliderTimes(manifest)
 
+    // A searched point is one you have not seen yet, so the map has to go to
+    // it -- unlike a clicked one, which is already under the cursor. With both
+    // ends set, show the whole walk rather than only its far end.
+    const pickPlace = (place: Place) => {
+        // Plain state, not the updater form: this is called from a handler that
+        // is rebuilt every render, so `points` is already current -- and moving
+        // the map is a side effect, which an updater is no place for. React may
+        // call one twice.
+        const picked = nextPoints(points, place.point)
+        setPoints(picked)
+
+        const map = mapRef.current
+        if (!map) return
+
+        if (picked.length === 2) {
+            // Room for the panels standing over the map on three sides, but
+            // never more than the map can spare. Asking for 330px of clearance
+            // on each side of an 800px window leaves 140 for the walk, and
+            // maplibre answers by zooming out to the whole oblast -- a 2 km
+            // walk drawn at 5 km to the centimetre.
+            const box = map.getContainer()
+            const side = Math.min(340, box.clientWidth * 0.26)
+            const vert = Math.min(90, box.clientHeight * 0.15)
+
+            // Extended rather than written as a pair. fitBounds reads a bare
+            // array as [south-west, north-east], so handing it the two points
+            // in the order they were picked inverts the box whenever the
+            // destination lies west or south of the start -- and an inverted
+            // box is one that wraps the planet, which maplibre duly fits by
+            // zooming out to the whole oblast.
+            const bounds = new maplibregl.LngLatBounds()
+            for (const [lat, lon] of picked) bounds.extend([lon, lat])
+
+            map.fitBounds(bounds, {
+                padding: { top: vert, bottom: vert, left: side, right: side },
+                maxZoom: SEARCH_ZOOM,
+            })
+        } else {
+            map.flyTo({
+                center: [place.point[1], place.point[0]],
+                zoom: Math.max(map.getZoom(), SEARCH_ZOOM),
+            })
+        }
+    }
+
     // What the controls currently describe. Two points and a clock make a
     // request; anything less makes none.
     const requestKey = manifest && points.length >= 2
@@ -270,6 +335,56 @@ function MapView() {
         ;(map.getSource('baseline') as maplibregl.GeoJSONSource | undefined)?.setData(asFeature(drawnPlan?.baseline.geometry))
     }, [drawnPlan])
 
+    // --- the building each end of the walk stands on -----------------------
+    useEffect(() => {
+        const map = mapRef.current
+        if (!map) return
+
+        // Only what is on screen and drawn can be asked about: this reads the
+        // basemap's own building tiles rather than any data of ours, so a
+        // footprint outside the viewport, or in a tile still loading, is not
+        // there to be found yet. Hence the re-run on idle below.
+        const underneath = () => ({
+            type: 'FeatureCollection' as const,
+            features: points.flatMap(([lat, lon], index) => {
+                const [hit] = map.queryRenderedFeatures(map.project([lon, lat]),
+                    { layers: ['buildings'] })
+
+                // Not hit.geometry. A feature in these tiles is not always one
+                // building -- zoomed out they arrive packed many to a
+                // MultiPolygon, and drawing the whole of what was returned
+                // tinted every footprint in the district.
+                const shape = footprintAt(hit?.geometry, lon, lat)
+                return shape ? [{
+                    type: 'Feature' as const,
+                    geometry: shape,
+                    properties: { role: index === 0 ? 'start' : 'end' },
+                }] : []
+            }),
+        })
+
+        // What was last drawn, so that setting the same shape again can be
+        // skipped. It is not an optimisation: setData re-renders, a re-render
+        // fires idle, and an idle that always sets data would spin forever.
+        let painted = ''
+
+        const paint = () => {
+            const data = underneath()
+            const signature = JSON.stringify(data)
+            if (signature === painted) return
+            painted = signature
+            ;(map.getSource('endpoints') as maplibregl.GeoJSONSource | undefined)?.setData(data)
+        }
+
+        paint()
+
+        // Every settle, not just the first: the geometry a tile hands back is
+        // clipped and simplified for the zoom it was asked at, so a highlight
+        // queried at z12 is the wrong shape once you have zoomed to z17.
+        map.on('idle', paint)
+        return () => { map.off('idle', paint) }
+    }, [points])
+
     // --- markers for the two clicked points --------------------------------
     useEffect(() => {
         const map = mapRef.current
@@ -319,6 +434,7 @@ function MapView() {
                     ])),
                     baseline: { type: 'geojson', data: EMPTY },
                     route: { type: 'geojson', data: EMPTY },
+                    endpoints: { type: 'geojson', data: EMPTY },
                 },
                 layers: [
                     // Its buildings layer is dropped and redrawn above the
@@ -342,6 +458,33 @@ function MapView() {
                         },
                     })),
                     ...buildingLayers,
+                    // Over the buildings, under the route. A pin says where you
+                    // are to within a few metres; tinting the footprint it
+                    // stands on says which door, which is the thing somebody
+                    // walking actually has to recognise.
+                    {
+                        id: 'endpoint-fill',
+                        type: 'fill',
+                        source: 'endpoints',
+                        paint: {
+                            'fill-color': ['case', ['==', ['get', 'role'], 'start'],
+                                START_COLOUR, END_COLOUR] as maplibregl.ExpressionSpecification,
+                            // Enough to read as deliberate, little enough that
+                            // the footprint underneath is still a building and
+                            // not a swatch.
+                            'fill-opacity': 0.45,
+                        },
+                    },
+                    {
+                        id: 'endpoint-outline',
+                        type: 'line',
+                        source: 'endpoints',
+                        paint: {
+                            'line-color': ['case', ['==', ['get', 'role'], 'start'],
+                                START_COLOUR, END_COLOUR] as maplibregl.ExpressionSpecification,
+                            'line-width': 1.5,
+                        },
+                    },
                     // Baseline under the route: where they overlap, the shaded
                     // route should be the one you see.
                     {
@@ -380,12 +523,11 @@ function MapView() {
         map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right')
         map.addControl(new maplibregl.ScaleControl({ maxWidth: 92, unit: 'metric' }), 'bottom-right')
 
-        // First click sets the start, second the destination, third starts over.
         // The updater form is essential: this handler is registered once and
         // would otherwise capture the empty array it saw at mount forever.
         map.on('click', event => {
             const { lat, lng } = event.lngLat
-            setPoints(previous => (previous.length >= 2 ? [[lat, lng]] : [...previous, [lat, lng]]))
+            setPoints(previous => nextPoints(previous, [lat, lng]))
         })
         map.getCanvas().style.cursor = 'crosshair'
 
@@ -428,6 +570,13 @@ function MapView() {
                     <div className="brand-sub">Astana{manifest && ` \u00b7 ${prettyDate(manifest.date)}`}</div>
                 </div>
             </header>
+
+            {/* Clicking the map only works if you can already find the place on
+                it. This is the other way in, and it is the one anybody who does
+                not know Astana by sight has to use. */}
+            <div className="panel search">
+                <SearchBox onPick={pickPlace} next={points.length === 1 ? 'destination' : 'start'} />
+            </div>
 
             <RouteSummary plan={plan} loading={loading} error={error} pointCount={points.length} alpha={alpha} />
 

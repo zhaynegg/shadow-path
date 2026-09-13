@@ -65,15 +65,18 @@ function RouteSummary({ plan, loading, error, pointCount, alpha }: RouteSummaryP
     } else if (pointCount === 0) {
         body = (
             <div className="summary-hint">
+                {/* Both ways in, named in the order they are reached for:
+                    somebody who can see their street clicks it, and somebody
+                    who cannot needs to be told the search box is there at all. */}
                 <span className="pin pin-a">A</span>
-                Click the map to set a starting point.
+                Click the map, or search, to set a starting point.
             </div>
         )
     } else if (pointCount === 1) {
         body = (
             <div className="summary-hint">
                 <span className="pin pin-b">B</span>
-                Now click a destination.
+                Now pick a destination.
             </div>
         )
     } else if (loading || !plan) {

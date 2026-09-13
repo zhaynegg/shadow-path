@@ -142,6 +142,111 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+/* --- search ------------------------------------------------------------ */
+
+/* Directly under the brand, which is where a reader who cannot find their
+   street on sight looks first. The input *is* the panel -- no padding of its
+   own -- so the glass reads as a single field rather than as a box with a box
+   inside it. */
+.search {
+    top: 84px;
+    left: 16px;
+    width: 296px;
+    padding: 0;
+}
+
+.search-wrap { position: relative; }
+
+.search-icon {
+    position: absolute;
+    left: 13px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--ink-3);
+    pointer-events: none;
+}
+
+.search-input {
+    width: 100%;
+    border: 0;
+    background: none;
+    font-family: inherit;
+    font-size: 13px;
+    color: var(--ink);
+    padding: 11px 13px 11px 35px;
+    border-radius: var(--r-lg);
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+.search-input::placeholder { color: var(--ink-3); }
+
+/* Safari and Chrome draw their own grey X inside type="search", in their own
+   metrics and nobody else's palette. */
+.search-input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+
+.search-input:focus-visible { box-shadow: inset 0 0 0 2px var(--route); }
+
+/* Its own sheet of glass, below the field. It is not inside the panel: a list
+   of six results is taller than the field it drops from, and a panel that grew
+   to hold it would push the dock down the screen every time somebody typed. */
+.search-drop {
+    position: absolute;
+    top: calc(100% + 7px);
+    left: 0;
+    right: 0;
+    max-height: 296px;
+    overflow-y: auto;
+    background: var(--panel-bg);
+    -webkit-backdrop-filter: var(--panel-blur);
+    backdrop-filter: var(--panel-blur);
+    border: 1px solid var(--panel-brd);
+    border-radius: var(--r-md);
+    box-shadow: var(--panel-shadow), inset 0 1px 0 var(--panel-hi);
+    overflow-x: hidden;
+}
+
+.search-note {
+    margin: 0;
+    padding: 11px 14px;
+    font-size: 12.5px;
+    color: var(--ink-2);
+}
+
+.search-note.is-error { color: var(--danger); }
+
+.search-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.search-hit {
+    padding: 9px 14px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.search-hit + .search-hit { border-top: 1px solid var(--panel-brd); }
+
+/* One highlight for both the cursor and the arrow keys: hover sets the same
+   active row Enter would take, so the two never point at different results. */
+.search-hit.is-active { background: var(--surface-2); }
+
+.search-hit-name {
+    font-size: 13px;
+    line-height: 1.3;
+}
+
+.search-hit-where {
+    font-size: 11.5px;
+    color: var(--ink-3);
+    line-height: 1.3;
+}
+
 /* --- dock (the controls) ----------------------------------------------- */
 
 .dock {
@@ -628,7 +733,7 @@ body {
 
     .dock {
         bottom: auto;
-        top: 74px;
+        top: 134px;
         left: 12px;
         right: 12px;
         width: auto;
@@ -637,6 +742,11 @@ body {
     }
 
     .brand { top: 12px; left: 12px; right: 12px; }
+
+    /* Under the brand, and the dock moves down to make room. The field keeps a
+       fixed height whatever the search is doing -- the results drop over the
+       map rather than pushing it -- so nothing below it ever shifts. */
+    .search { top: 74px; left: 12px; right: 12px; width: auto; }
 
     .dock-foot { padding-top: 11px; }
 
