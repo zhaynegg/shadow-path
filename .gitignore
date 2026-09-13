@@ -21,6 +21,8 @@ data/cache/*
 !data/cache/astana_buildings.parquet
 # Same reasoning for the trees, and it is a much smaller file.
 !data/cache/astana_trees.parquet
+# ...and the detected canopy, which the shadow model now reads.
+!data/cache/astana_canopy.parquet
 frontend/public/*.pmtiles
 
 # Env & editors

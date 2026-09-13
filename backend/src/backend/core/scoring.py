@@ -5,6 +5,28 @@ import shapely
 from backend.config import CRS
 
 
+def score_edges_layered(edges, opaque, dappled, opacity: float) -> gpd.GeoDataFrame:
+    """Shade fraction with canopy counted at less than its full area.
+
+    A crown is not a wall. Scoring the two as one geometry said a tree-lined
+    street was as shaded as one in a tower's shadow, which is not what walking
+    down either feels like.
+
+    The halves are disjoint by construction (see layered_field), so their
+    fractions add without any risk of counting the same metre twice.
+    """
+    if opaque is None and dappled is None:
+        # Sun below the horizon: score_edges reads None as full shade.
+        return score_edges(edges, None)
+
+    solid = score_edges(edges, opaque)["shade_fraction"] if opaque is not None else 0.0
+    soft = score_edges(edges, dappled)["shade_fraction"] if dappled is not None else 0.0
+
+    scored = edges.copy()
+    scored["shade_fraction"] = (solid + opacity * soft).clip(upper=1.0)
+    return scored
+
+
 def score_edges(edges: gpd.GeoDataFrame, shadow) -> gpd.GeoDataFrame:
     """What fraction of each edge lies in shade.
 

@@ -2,6 +2,7 @@ import datetime as dt
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import shapely
 from shapely.affinity import translate
 from shapely.geometry import Polygon
@@ -62,6 +63,27 @@ def shadow_field(gdf: gpd.GeoDataFrame, altitude: float, azimuth: float):
     if shadows.empty:
         return None
     return gpd.GeoSeries(shadows, crs=gdf.crs).union_all()
+
+
+def layered_field(gdf: gpd.GeoDataFrame, altitude: float, azimuth: float, soft: pd.Series):
+    """Shadow split into what is solid and what is dappled.
+
+    Returns (opaque, dappled), the second with the first cut out of it, so the
+    two never cover the same ground. That matters twice over: score_edges sums
+    per blob and would double-count an overlap, and on the map a canopy drawn
+    over a building shadow would darken it for no reason.
+
+    Either half can be None -- a winter date has no canopy, and a frame of only
+    trees has nothing solid.
+    """
+    opaque = shadow_field(gdf[~soft], altitude, azimuth)
+    dappled = shadow_field(gdf[soft], altitude, azimuth)
+
+    if dappled is not None and opaque is not None:
+        dappled = dappled.difference(opaque)
+        if dappled.is_empty:
+            dappled = None
+    return opaque, dappled
 
 
 def shadow_frame(geom, crs, when: dt.datetime, altitude, azimuth) -> gpd.GeoDataFrame:

@@ -63,6 +63,17 @@ const shadowLayer = (hour: number) => `shadow-${hour}`
 const SHADOW_COLOUR = '#4a4a68'
 const SHADOW_OPACITY = 0.3
 
+// A crown is not a wall. Tiles tag each blob 'solid' or 'canopy', and canopy is
+// drawn through the same factor the router weights it by -- CANOPY_OPACITY in
+// core/trees.py. If you change one, change the other: a map that shades a
+// tree-lined street darker than the route thinks it is, is lying to the reader.
+const CANOPY_OPACITY = 0.7
+const FILL_OPACITY: maplibregl.ExpressionSpecification = [
+    'case', ['==', ['get', 'kind'], 'canopy'],
+    SHADOW_OPACITY * CANOPY_OPACITY,
+    SHADOW_OPACITY,
+]
+
 // A source wants a FeatureCollection; a route is a bare geometry until wrapped.
 const asFeature = (geometry: LineGeometry | undefined) =>
     geometry
@@ -229,7 +240,7 @@ function MapView() {
                         },
                         paint: {
                             'fill-color': SHADOW_COLOUR,
-                            'fill-opacity': SHADOW_OPACITY,
+                            'fill-opacity': FILL_OPACITY,
                         },
                     })),
                     // Baseline under the route: where they overlap, the shaded

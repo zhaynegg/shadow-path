@@ -15,10 +15,10 @@ from backend.config import CACHE_DIR, CRS, GRAPH_RADIUS, LAT, LON, TZ, today
 from backend.core.buildings import load_buildings
 from backend.core.graph import load_graph
 from backend.core.routing import MAX_ALPHA, plan
-from backend.core.scoring import score_edges
-from backend.core.shadows import MAX_SHADOW_M, shadow_field
+from backend.core.scoring import score_edges, score_edges_layered
+from backend.core.shadows import MAX_SHADOW_M, layered_field
 from backend.core.solar import sun_position
-from backend.core.trees import shading_geometry
+from backend.core.trees import CANOPY_OPACITY, CANOPY_SOURCES, shading_geometry
 
 # The map draws shadows from precomputed tiles built by
 # scripts/export_shadow_tiles.py, so nothing here serves them. What is left is
@@ -95,11 +95,18 @@ def scored_edges(date: dt.date, hour: int):
     """
     when = dt.datetime.combine(date, dt.time(hour), tzinfo=TZ)
     altitude, azimuth = sun_position(LAT, LON, when)
+    edges = ox.graph_to_gdfs(graph(), nodes=False)
+    if altitude <= 0:
+        return score_edges(edges, None)
+
     # Same frame the tiles were built from, so the route cannot be weighted by
-    # shade the map does not draw.
+    # shade the map does not draw. Split in two on the way in: a crown is not a
+    # wall, and counting them alike called a tree-lined street as shaded as the
+    # north side of a tower.
     casters = shading_geometry(routing_buildings(), date, CACHE_DIR, SHADING_RADIUS)
-    shadow = shadow_field(casters, altitude, azimuth) if altitude > 0 else None
-    return score_edges(ox.graph_to_gdfs(graph(), nodes=False), shadow)
+    opaque, dappled = layered_field(
+        casters, altitude, azimuth, casters["height_source"].isin(CANOPY_SOURCES))
+    return score_edges_layered(edges, opaque, dappled, CANOPY_OPACITY)
 
 
 @app.get("/api/health")

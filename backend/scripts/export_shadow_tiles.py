@@ -26,11 +26,12 @@ import time
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 from backend.config import CACHE_DIR, LAT, LON, TZ, today
 from backend.core.buildings import load_buildings
-from backend.core.shadows import SIMPLIFY_M, shadow_field
+from backend.core.shadows import SIMPLIFY_M, layered_field
 from backend.core.solar import sun_position
-from backend.core.trees import shading_geometry
+from backend.core.trees import CANOPY_SOURCES, shading_geometry
 
 # Every hour uses the same layer name, so one map style can read whichever
 # tileset is currently loaded without rewriting the layer.
@@ -47,14 +48,21 @@ REPO = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = REPO / "frontend" / "public" / "shadows"
 
 
-def blobs(merged, crs) -> gpd.GeoDataFrame:
+def blobs(merged, crs, kind: str) -> gpd.GeoDataFrame:
     """The merged field as one feature per shadow blob, in lon/lat.
 
     Tippecanoe slices thousands of small features across tiles far better than
     one city-sized multipolygon -- and a blob is the honest unit anyway.
+
+    `kind` rides along as a feature property so the map can draw a crown
+    lighter than a wall. Without it every shadow is equally black, which is
+    both wrong and the reason you cannot tell there are trees on the map.
     """
     parts = list(merged.geoms) if hasattr(merged, "geoms") else [merged]
-    frame = gpd.GeoDataFrame(geometry=[part.simplify(SIMPLIFY_M) for part in parts], crs=crs)
+    frame = gpd.GeoDataFrame(
+        geometry=[part.simplify(SIMPLIFY_M) for part in parts], crs=crs
+    )
+    frame["kind"] = kind
     return frame.to_crs(4326)
 
 
@@ -67,11 +75,17 @@ def build_hour(
     if altitude <= 0:
         return None
 
-    merged = shadow_field(gdf, altitude, azimuth)
-    if merged is None:
+    # Split the same way the router does, so the picture and the route agree
+    # about what canopy is worth.
+    opaque, dappled = layered_field(
+        gdf, altitude, azimuth, gdf["height_source"].isin(CANOPY_SOURCES))
+    if opaque is None and dappled is None:
         return None
 
-    frame = blobs(merged, gdf.crs)
+    parts = [blobs(field, gdf.crs, kind)
+             for field, kind in ((opaque, "solid"), (dappled, "canopy"))
+             if field is not None]
+    frame = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=4326)
     source = work_dir / f"{hour:02d}.geojson"
     frame.to_file(source, driver="GeoJSON")
 

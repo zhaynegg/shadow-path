@@ -33,3 +33,7 @@ dev = [
     "ruff>=0.16.5",
     "scipy>=1.18.1",
 ]
+ml = [
+    "rasterio>=1.5.1",
+    "scikit-learn>=1.9.1",
+]

@@ -288,6 +288,7 @@ backend/
     export_fixtures.py       write shadow GeoJSON fixtures for the frontend
     export_shadow_tiles.py   a .pmtiles layer per daylight hour, + index.json
     fetch_trees.py           cache OSM tree rows and points
+    detect_trees.py          find canopy in Sentinel-2 (needs --group ml)
   src/backend/
     main.py                  FastAPI app: /api/route, /api/health
     config.py                paths, radius, timezone, city centre, today()
@@ -316,6 +317,7 @@ data/
   cache/                     gitignored (osmnx cache, graphml, scored graphs)
     astana_buildings.parquet ...except this, tracked so CI has footprints
     astana_trees.parquet     ...and this, 101 KB of mapped trees
+    astana_canopy.parquet    ...and the detected canopy, 2.7 MB
   height_overrides.csv       hand-entered storey counts
   survey_queue.csv           buildings awaiting a manual storey count
 ```
@@ -360,7 +362,9 @@ FastAPI's `StaticFiles` or a CDN.
 ## Known gaps
 
 **Dependencies still to add:** `pydantic-settings`, and `httpx` for API tests.
-`pytest`, `ruff` and `scipy` are in the dev group; `pyarrow` is in the main one.
+`pytest`, `ruff` and `scipy` are in the dev group, `rasterio` and
+`scikit-learn` in an `ml` group the API never installs, and `pyarrow` is in the
+main one.
 The timezone is hardcoded to UTC+5 in `config.py` — the documented shortcut
 while this is single-city, and `timezonefinder` is what replaces it.
 
@@ -378,29 +382,64 @@ boundary polygon (Сарайшық ауданы, `admin_level=8`); Есіл, А�
 Байқоңыр and Нұра are absent. A district-keyed prior needs hand-drawn zones or
 a distance-to-centre proxy.
 
-**Trees are modelled, but barely mapped.** `core/trees.py` buffers OSM
-`natural=tree` points and `natural=tree_row` lines into canopy and feeds them
-through the same `shadow_field` as buildings, gated on a leaf-on season (1 May
-to 10 Oct) — bare trees cast nothing, and phantom winter canopy would be worse
-than none, since the winter product is sun-seeking.
+**Trees are modelled, and mostly detected rather than mapped.** OSM has 2,909
+tree features for all of Astana, reaching 0.1% of the walk network — nowhere
+near enough to change a route. `scripts/detect_trees.py` fills in the rest from
+Sentinel-2 imagery and takes that to **62%**.
 
-The limit is coverage, not code. OSM has 2,909 tree features for the whole city,
-and inside the routing disc that is 1.2 km of planting against **570 km** of
-walk network: 0.1% of edges, and 0.5% added to total shadow area. Correct, and
-not yet enough to change a route.
+The detector is a gradient-boosted tree over per-pixel spectral features — 7
+bands plus NDVI, NDWI, NBR, a SWIR ratio and red-edge NDVI — trained on what OSM
+already knows. Positives are `natural=tree` and `natural=tree_row`; negatives are
+building roofs and, the ones that matter, `landuse=grass`, `meadow`, `farmland`
+and `leisure=pitch`. Without the grass classes the model learns "vegetation",
+flags every lawn in the city, and buries Astana in shade.
 
-Two numbers under it are invented. **No Astana tree carries a `height` tag** —
-not one — so every canopy height is a flat 8 m constant, tagged
-`height_source="tree_default"` so the provenance column keeps its meaning. The
-crown width is a 3 m guess. A canopy height raster (ETH 10 m, Meta 1 m) is the
-only route to real coverage, and whether either resolves a single row of steppe
-street trees is unverified.
+Scored on 1 km blocks of city, never on random pixels — neighbouring pixels are
+nearly the same measurement, so a random split tests on trees it trained on:
 
-Canopy is also treated as opaque, like a wall. Real tree shade is dappled, so
-what shade there is, is overstated.
+```
+ROC AUC 0.903    average precision 0.517    (base rate 0.089)
+
+recall on OSM-mapped trees            75%
+predicted canopy landing on roofs   0.66%   <- unambiguous false positives
+predicted canopy landing on grass   1.02%   <- the class it was taught to reject
+```
+
+Those last two are what make it believable: it is not simply painting anything
+green.
+
+Imagery is Sentinel-2 because it is openly licensed and the output can therefore
+be published. Google and Bing tiles are higher resolution and would be a licence
+breach for exactly the reason recorded above — a canopy layer traced from them is
+a derived dataset displayed on a non-Google map.
+
+**Canopy is dappled, and both the router and the map now say so.** A crown is
+not a wall. `layered_field` splits each hour's shadow into solid and canopy,
+with the canopy half cut out of the solid one so nothing is counted twice, and
+`score_edges_layered` weights the canopy contribution by `CANOPY_OPACITY = 0.7`.
+Mean shade across the walk network at 13:00 on 13 September:
+
+| | mean shade_fraction |
+|---|---|
+| buildings only | 0.085 |
+| canopy as a wall | 0.431 |
+| canopy dappled (shipped) | **0.327** |
+
+The tiles carry the same split as a `kind` property per blob, so the map draws a
+crown at 0.7 of a wall's opacity. That is also why you can finally see the trees:
+before this, canopy and building shadow were the same flat colour.
+
+Two things to hold against all of it. **The model finds where canopy is, never
+how tall** — every polygon still leaves with the flat 8 m constant, tagged
+`height_source="canopy_model"`, a guess twice over. And the imagery is **August
+2024** against a map that says 2026, in a city planting hard, so it under-reports.
 
 **Model limits:** flat terrain, no awnings or arcades. No DEM, so hills and
 their shadows are invisible.
+
+**The tiles have grown.** Canopy roughly tripled them, 59 MB to 151 MB a day.
+Still nothing next to a Pages site limit, but it changes the arithmetic on
+whatever ends up serving them.
 
 ## Attribution
 
