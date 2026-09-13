@@ -301,7 +301,7 @@ backend/
       scoring.py             edge sub-segmentation + shade fraction
       routing.py             weighted A*, baseline route, stats
   tests/
-    test_scoring.py, test_routing.py
+    test_scoring.py, test_routing.py, test_api.py
 
 frontend/src/
   api/client.ts              typed fetch; mirrors main.py and the tile manifest
@@ -349,6 +349,12 @@ Data analysis:
 cd backend && uv run python scripts/height_coverage.py
 ```
 
+Tests — fast, and none of them need the cache:
+
+```bash
+cd backend && uv run pytest
+```
+
 Backend:
 
 ```bash
@@ -361,10 +367,9 @@ FastAPI's `StaticFiles` or a CDN.
 
 ## Known gaps
 
-**Dependencies still to add:** `pydantic-settings`, and `httpx` for API tests.
-`pytest`, `ruff` and `scipy` are in the dev group, `rasterio` and
-`scikit-learn` in an `ml` group the API never installs, and `pyarrow` is in the
-main one.
+**Dependencies still to add:** `pydantic-settings`. `pytest`, `ruff`, `scipy`
+and `httpx` are in the dev group, `rasterio` and `scikit-learn` in an `ml`
+group the API never installs, and `pyarrow` is in the main one.
 The timezone is hardcoded to UTC+5 in `config.py` — the documented shortcut
 while this is single-city, and `timezonefinder` is what replaces it.
 
@@ -373,9 +378,16 @@ artifact. Publishing them needs a decision about the backend too: GitHub Pages
 is static, so `/api/route` would 404 there and routing would not work until
 FastAPI is hosted somewhere.
 
-**The API date path is untested.** `tests/` covers scoring and routing, but
-nothing exercises `RouteRequest` validation or that `scored_edges` keys on the
-date — which was a real bug, and an invisible one.
+**The endpoint is never exercised against the real city.** `test_api.py` covers
+what a caller may ask for and what gets cached: the date bounds, the `alpha`
+bounds — which are there to reject `inf` and `nan` as much as to fix a range,
+since either sails through A* and comes back as a route with no error attached
+— and that `scored_edges` keys on the date, which was a real bug and an
+invisible one. What it deliberately does not do is route. A request through
+`/api/route` pulls the graph and the footprints off disk, which is minutes on a
+warm cache and a failure on a cold one, so the tests stand the expensive calls
+aside and nothing checks that the pieces fit together with a real graph in
+them.
 
 **Districts aren't available.** OSM has only one of Astana's city districts as a
 boundary polygon (Сарайшық ауданы, `admin_level=8`); Есіл, Алматы, Сарыарқа,
