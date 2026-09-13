@@ -13,20 +13,41 @@ type RouteSummaryProp = {
 const percent = (fraction: number) => `${Math.round(fraction * 100)}%`
 const metres = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`)
 
-type RowProp = { label: string, leg: RoutePlan['route'], colour: string, seekingSun: boolean }
+type RowProp = {
+    label: string,
+    leg: RoutePlan['route'],
+    seekingSun: boolean,
+    // The route is a solid blue line on the map and the baseline is a grey
+    // dashed one. The same two marks appear here, so a row and the line it
+    // describes are matched by shape rather than by having to be told.
+    mark: 'line' | 'dash',
+}
 
-function Row({ label, leg, colour, seekingSun }: RowProp) {
+function Row({ label, leg, seekingSun, mark }: RowProp) {
     // The backend only ever measures shade. Sun is the other side of the same
     // number, not a second measurement.
     const share = seekingSun ? 1 - leg.shade_fraction : leg.shade_fraction
 
     return (
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 6 }}>
-            <span style={{ width: 10, height: 10, borderRadius: 2, background: colour, flexShrink: 0 }} />
-            <span style={{ flex: 1 }}>{label}</span>
-            <span style={{ fontVariantNumeric: 'tabular-nums' }}>{metres(leg.distance_m)}</span>
-            <span style={{ fontVariantNumeric: 'tabular-nums', width: 58, textAlign: 'right' }}>
-                {percent(share)} {seekingSun ? 'sun' : 'shade'}
+        <div className="stat">
+            <span className="stat-name">
+                <span className={mark} />
+                {label}
+            </span>
+            <span className="stat-dist">{metres(leg.distance_m)}</span>
+            <span className="stat-bar">
+                {/* Both bars are filled in the colour of the thing being
+                    measured and drawn to the same scale, so the gap between
+                    them is the answer, at a glance. */}
+                <span className="bar">
+                    <span className="bar-fill" style={{
+                        width: `${Math.max(share * 100, 0)}%`,
+                        background: seekingSun ? 'var(--sun)' : 'var(--shade)',
+                    }} />
+                </span>
+                <span className="stat-share">
+                    {percent(share)} {seekingSun ? 'sun' : 'shade'}
+                </span>
             </span>
         </div>
     )
@@ -40,13 +61,28 @@ function RouteSummary({ plan, loading, error, pointCount, alpha }: RouteSummaryP
     let body
 
     if (error) {
-        body = <span style={{ color: '#c0392b' }}>{error}</span>
+        body = <div className="summary-error">{error}</div>
     } else if (pointCount === 0) {
-        body = <span>Click the map to set a starting point.</span>
+        body = (
+            <div className="summary-hint">
+                <span className="pin pin-a">A</span>
+                Click the map to set a starting point.
+            </div>
+        )
     } else if (pointCount === 1) {
-        body = <span>Now click a destination.</span>
+        body = (
+            <div className="summary-hint">
+                <span className="pin pin-b">B</span>
+                Now click a destination.
+            </div>
+        )
     } else if (loading || !plan) {
-        body = <span>Finding a route…</span>
+        body = (
+            <div className="summary-hint">
+                <span className="spinner" />
+                Finding a route…
+            </div>
+        )
     } else {
         // Deliberately not "2.3x more shade": at midday the direct route is
         // often 0% shaded, and nothing is a useful multiple of zero.
@@ -58,25 +94,29 @@ function RouteSummary({ plan, loading, error, pointCount, alpha }: RouteSummaryP
 
         body = (
             <>
-                <Row label={`${found} route`}
-                    leg={plan.route} colour="#2563eb" seekingSun={seekingSun} />
-                <Row label="direct route" leg={plan.baseline} colour="#9ca3af"
-                    seekingSun={seekingSun} />
-                <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid #e5e7eb' }}>
+                <Row label={`${found} route`} leg={plan.route}
+                    seekingSun={seekingSun} mark="line" />
+                <Row label="direct route" leg={plan.baseline}
+                    seekingSun={seekingSun} mark="dash" />
+                <div className="verdict">
                     {gained < 0.005
                         ? `No ${more} route exists here — both are the same walk.`
-                        : `${percent(longer)} longer, ${percent(gained)} more of the walk in ${wanted}.`}
+                        : (
+                            <>
+                                <strong>{percent(longer)}</strong> longer, for{' '}
+                                <strong>{percent(gained)}</strong> more of the walk in {wanted}.
+                            </>
+                        )}
                 </div>
             </>
         )
     }
 
     return (
-        <div style={{
-            position: 'absolute', zIndex: 1, top: 16, right: 16, width: 300,
-            padding: '12px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.94)',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.25)', fontSize: 13, lineHeight: 1.4,
-        }}>
+        <div className="panel summary">
+            <div className="summary-head">
+                <span className="summary-title">Your walk</span>
+            </div>
             {body}
         </div>
     )

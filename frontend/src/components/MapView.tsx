@@ -11,6 +11,10 @@ import {
     type LatLon, type LineGeometry, type RoutePlan, type ShadowManifest,
 } from '../api/client'
 
+// What the backend last said, and which request it was saying it about. Either
+// a plan or a message, never both -- a failed request has no route to draw.
+type Answer = { key: string, plan?: RoutePlan, error?: string }
+
 const protocol = new Protocol({ metadata: true })
 
 // Vite proxies /api to the backend in dev (see vite.config.ts), so this stays
@@ -45,6 +49,12 @@ const isDaylight = (time: string, manifest: ShadowManifest | null) =>
 // faster. Sorting "HH:MM" as text is chronological.
 const sliderTimes = (manifest: ShadowManifest | null) =>
     manifest ? [...new Set([...WHOLE_HOURS, ...manifest.times])].sort() : WHOLE_HOURS
+
+// The manifest's date, spelled out. "2026-09-13" in a corner reads as a build
+// artefact; "13 Sep 2026" reads as the day the sun in front of you belongs to.
+const prettyDate = (iso: string) =>
+    new Date(`${iso}T12:00:00`).toLocaleDateString('en-GB',
+        { day: 'numeric', month: 'short', year: 'numeric' })
 
 const toMinutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3))
 
@@ -181,11 +191,37 @@ function MapView() {
     const [time, setTime] = useState(() => nearestStamp(cityMinutes(), WHOLE_HOURS))
     const [alpha, setAlpha] = useState(INITIAL_ALPHA)
     const [points, setPoints] = useState<LatLon[]>([])
-    const [plan, setPlan] = useState<RoutePlan | null>(null)
-    const [loading, setLoading] = useState(false)
-    const [error, setError] = useState<string | null>(null)
+
+    // One slot for whatever the backend last said, tagged with the request it
+    // was an answer to. Tagging is the whole mechanism: it lets the plan, the
+    // error and the spinner all be worked out during render, instead of being
+    // three states that an effect has to remember to null out every time the
+    // clicks or the clock move underneath them.
+    const [answer, setAnswer] = useState<Answer | null>(null)
 
     const times = sliderTimes(manifest)
+
+    // What the controls currently describe. Two points and a clock make a
+    // request; anything less makes none.
+    const requestKey = manifest && points.length >= 2
+        ? JSON.stringify([points[0], points[1], manifest.date, time, alpha])
+        : null
+
+    // An answer to some earlier question is not an answer to this one.
+    const answered = answer?.key === requestKey ? answer : null
+    const plan = answered?.plan ?? null
+    const error = answered?.error ?? null
+
+    // A question with nothing answering it yet. True from the moment the second
+    // point lands rather than from the moment the fetch starts, so the debounce
+    // is part of the wait the panel admits to -- it used to spend that 150ms
+    // showing the previous stamp's numbers as though they were these.
+    const loading = requestKey !== null && answered === null
+
+    // The map is the exception: it keeps the line it last drew while the next
+    // one is computed, because blanking it on every step of the time slider
+    // would flicker. It clears only when no walk is being asked about at all.
+    const drawnPlan = requestKey ? answer?.plan ?? null : null
 
     // --- what the tiles are, before any of them can be drawn ---------------
     useEffect(() => {
@@ -231,17 +267,13 @@ function MapView() {
 
     // --- ask the backend for a route ---------------------------------------
     useEffect(() => {
-        // No manifest means no map to click on, so this is belt and braces --
-        // but the date it carries is not optional to the request below.
-        if (!manifest || points.length < 2) {
-            setPlan(null)
-            setError(null)
-            return
-        }
+        // requestKey is null in exactly the cases these guards cover; they are
+        // spelled out again so TypeScript can narrow manifest and the points.
+        // Nothing is reset here -- there is no longer anything to reset.
+        if (!requestKey || !manifest || points.length < 2) return
 
         const controller = new AbortController()
         const timer = setTimeout(() => {
-            setLoading(true)
             fetchRoute(
                 {
                     origin: points[0], destination: points[1], date: manifest.date,
@@ -252,16 +284,13 @@ function MapView() {
                     alpha,
                 },
                 controller.signal)
-                .then(result => {
-                    setPlan(result)
-                    setError(null)
-                })
+                // Tagged with the question it answers. A slow answer for an
+                // old stamp can still land here, and is then simply not the
+                // answer to what is on screen -- the render above drops it.
+                .then(result => setAnswer({ key: requestKey, plan: result }))
                 .catch((err: Error) => {
                     // An abort is us cancelling on purpose, not a failure.
-                    if (err.name !== 'AbortError') setError(err.message)
-                })
-                .finally(() => {
-                    if (!controller.signal.aborted) setLoading(false)
+                    if (err.name !== 'AbortError') setAnswer({ key: requestKey, error: err.message })
                 })
         }, DEBOUNCE_MS)
 
@@ -271,25 +300,36 @@ function MapView() {
             clearTimeout(timer)
             controller.abort()
         }
-    }, [points, time, alpha, manifest])
+    }, [requestKey, points, time, alpha, manifest])
 
     // --- draw whatever came back -------------------------------------------
     useEffect(() => {
         const map = mapRef.current
         if (!map) return
-        ;(map.getSource('route') as maplibregl.GeoJSONSource | undefined)?.setData(asFeature(plan?.route.geometry))
-        ;(map.getSource('baseline') as maplibregl.GeoJSONSource | undefined)?.setData(asFeature(plan?.baseline.geometry))
-    }, [plan])
+        ;(map.getSource('route') as maplibregl.GeoJSONSource | undefined)?.setData(asFeature(drawnPlan?.route.geometry))
+        ;(map.getSource('baseline') as maplibregl.GeoJSONSource | undefined)?.setData(asFeature(drawnPlan?.baseline.geometry))
+    }, [drawnPlan])
 
     // --- markers for the two clicked points --------------------------------
     useEffect(() => {
         const map = mapRef.current
         if (!map) return
 
-        const markers = points.map(([lat, lon], index) =>
-            new maplibregl.Marker({ color: index === 0 ? '#15803d' : '#b91c1c' })
+        const markers = points.map(([lat, lon], index) => {
+            // maplibre's default pin is a 27px SVG that matches nothing else on
+            // screen. A custom element costs one line and lets the two ends of
+            // the walk be labelled A and B, which the summary panel then names.
+            const element = document.createElement('div')
+            element.className = `marker ${index === 0 ? 'marker-a' : 'marker-b'}`
+            element.innerHTML = `<span>${index === 0 ? 'A' : 'B'}</span>`
+            element.title = index === 0 ? 'Start' : 'Destination'
+
+            // The element is a square rotated -45deg, so its point is the
+            // bottom corner -- that corner is what has to sit on the coordinate.
+            return new maplibregl.Marker({ element, anchor: 'bottom' })
                 .setLngLat([lon, lat])
-                .addTo(map))
+                .addTo(map)
+        })
 
         return () => markers.forEach(marker => marker.remove())
     }, [points])
@@ -375,6 +415,11 @@ function MapView() {
         })
         mapRef.current = map
 
+        // Bottom right is the only corner no panel is standing in. Both are
+        // restyled in index.css -- maplibre ships them square and opaque.
+        map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right')
+        map.addControl(new maplibregl.ScaleControl({ maxWidth: 92, unit: 'metric' }), 'bottom-right')
+
         // First click sets the start, second the destination, third starts over.
         // The updater form is essential: this handler is registered once and
         // would otherwise capture the empty array it saw at mount forever.
@@ -402,39 +447,75 @@ function MapView() {
     }, [manifest]) // Runs once: the manifest is fetched once and never refetched.
 
     return (
-        <div style={{ position: 'relative', height: '100vh' }}>
-            <div style={{ height: '100%' }} ref={containerRef} />
+        <div className="app">
+            <div className="map-canvas" ref={containerRef} />
+
+            <header className="panel brand">
+                <span className="brand-mark" aria-hidden="true">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
+                        stroke="#fff" strokeWidth="2" strokeLinecap="round">
+                        <circle cx="12" cy="12" r="4.2" fill="#fff" stroke="none" />
+                        <path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2
+                            M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6" />
+                    </svg>
+                </span>
+                <div>
+                    <div className="brand-title">Shadow Path</div>
+                    {/* The date is the tiles' date, not today's. They are the
+                        same until a rebuild fails, and that is exactly when a
+                        reader deserves to be told which day they are looking
+                        at. */}
+                    <div className="brand-sub">Astana{manifest && ` \u00b7 ${prettyDate(manifest.date)}`}</div>
+                </div>
+            </header>
 
             <RouteSummary plan={plan} loading={loading} error={error} pointCount={points.length} alpha={alpha} />
 
-            <div style={{
-                position: 'absolute', zIndex: 1, bottom: 16, left: 16, width: 260,
-                padding: '12px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.94)',
-                boxShadow: '0 1px 4px rgba(0,0,0,0.25)', fontSize: 13, lineHeight: 1.4,
-                display: 'flex', flexDirection: 'column', gap: 10,
-            }}>
+            <div className="panel dock">
                 <TimeSlider labels={times} value={Math.max(0, times.indexOf(time))}
                     onChange={index => setTime(times[index])} />
+
                 {/* Past dusk every shadow layer hides and the map goes bare. That is
                     the honest picture, but an empty map reads as a failure unless
                     something says why it is empty. */}
                 {!isDaylight(time, manifest) && (
-                    <div style={{ color: '#6b7280' }}>
-                        The sun is down over Astana. Nothing casts a shadow at this hour.
+                    <div className="note note-night">
+                        <svg className="note-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M20.7 14.6A8.6 8.6 0 0 1 9.4 3.3a8.6 8.6 0 1 0 11.3 11.3z" />
+                        </svg>
+                        <span>The sun is down over Astana. Nothing casts a shadow at this hour.</span>
                     </div>
                 )}
+
                 {/* Without a manifest there is no map at all, so say so rather
                     than leaving an empty page to be read as a slow load. */}
                 {manifestError && (
-                    <div style={{ color: '#b91c1c' }}>{manifestError}</div>
+                    <div className="note note-error">
+                        <svg className="note-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 2 1.5 20.5h21L12 2zm0 6.5a1 1 0 0 1 1 1v4.8a1 1 0 1 1-2 0V9.5a1 1
+                                0 0 1 1-1zm0 9.2a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4z" />
+                        </svg>
+                        <span>{manifestError}</span>
+                    </div>
                 )}
+
                 <ShadeSlider value={alpha} onChange={setAlpha} />
-                <button
-                    onClick={() => setPoints([])}
-                    disabled={points.length === 0}
-                    style={{ padding: '4px 8px', fontSize: 12, cursor: points.length ? 'pointer' : 'default' }}>
-                    Clear points
-                </button>
+
+                <div className="dock-foot">
+                    {/* The map draws two kinds of shade in two colours and never
+                        says so anywhere else. */}
+                    <div className="legend">
+                        <span className="legend-item">
+                            <span className="swatch" style={{ background: SHADOW_COLOUR }} />building
+                        </span>
+                        <span className="legend-item">
+                            <span className="swatch" style={{ background: CANOPY_COLOUR }} />tree
+                        </span>
+                    </div>
+                    <button className="btn" onClick={() => setPoints([])} disabled={points.length === 0}>
+                        Clear
+                    </button>
+                </div>
             </div>
         </div>
     )

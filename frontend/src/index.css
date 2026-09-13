@@ -1,11 +1,692 @@
-html{
-    margin: 0;
+/* ===========================================================================
+   Shadow Path — design layer
+   ---------------------------------------------------------------------------
+   The map is the product; everything in here is the frame around it. Two rules
+   hold the whole sheet together:
+
+   1. The chrome borrows the map's own palette. The route is #2563eb on the
+      canvas, so the route is #2563eb in the legend and in the summary. Shade is
+      indigo, sun is amber, canopy is green -- in both places. A reader should
+      never have to learn a second colour language to read the panel.
+   2. Panels are glass, not paint. They float over a map whose whole job is to
+      be looked at, so they stay translucent and let the city show through
+      rather than cutting a white hole in it.
+   ========================================================================= */
+
+:root {
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+
+    /* Ink is warm-neutral rather than pure grey: the basemap ground is #cccccc
+       and the buildings are #f4f1ea, and a cold black panel sits on top of that
+       like a sticker. */
+    --ink: #1c1d21;
+    --ink-2: #5c6270;
+    --ink-3: #8b919e;
+
+    /* Glass. The saturate() is what keeps the map underneath from going milky
+       when it is blurred -- blur alone desaturates, and the city loses its
+       warmth exactly where the panel sits. */
+    --panel-bg: rgba(252, 251, 249, 0.78);
+    --panel-blur: saturate(1.8) blur(20px);
+    --panel-brd: rgba(28, 29, 33, 0.09);
+    --panel-hi: rgba(255, 255, 255, 0.85);
+    --panel-shadow:
+        0 1px 2px rgba(28, 29, 33, 0.06),
+        0 6px 16px -4px rgba(28, 29, 33, 0.12),
+        0 24px 48px -20px rgba(28, 29, 33, 0.22);
+
+    --surface-2: rgba(28, 29, 33, 0.05);
+    --surface-3: rgba(28, 29, 33, 0.09);
+
+    /* Straight off the map. See MapView.tsx. */
+    --route: #2563eb;
+    --baseline: #9ca3af;
+    --shade: #3b3b6d;
+    --canopy: #2f6e46;
+    --sun: #e8963c;
+    --danger: #b91c1c;
+    --start: #15803d;
+    --end: #b91c1c;
+
+    --r-sm: 7px;
+    --r-md: 11px;
+    --r-lg: 16px;
+
+    --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
-#root{
+* { box-sizing: border-box; }
+
+html, body, #root {
     margin: 0;
+    height: 100%;
 }
 
-body{
+body {
+    font-family: var(--font-sans);
+    color: var(--ink);
+    /* ss01/cv05 quiet down Inter's single-storey oddities at small sizes; the
+       harmless no-op elsewhere. */
+    font-feature-settings: "ss01", "cv05";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background: #cccccc; /* the basemap ground, so first paint is not white */
+}
+
+/* --- shell ------------------------------------------------------------- */
+
+.app {
+    position: relative;
+    height: 100%;
+    overflow: hidden;
+}
+
+.map-canvas {
+    position: absolute;
+    inset: 0;
+}
+
+/* Panels float above the map (z 1) but below nothing else; maplibre's own
+   controls live at z 2 by default and are pulled into line further down. */
+.panel {
+    position: absolute;
+    z-index: 2;
+    background: var(--panel-bg);
+    -webkit-backdrop-filter: var(--panel-blur);
+    backdrop-filter: var(--panel-blur);
+    border: 1px solid var(--panel-brd);
+    /* The inset highlight is the whole trick that makes glass read as glass:
+       a lit top edge, as if the panel had thickness. */
+    box-shadow: var(--panel-shadow), inset 0 1px 0 var(--panel-hi);
+    border-radius: var(--r-lg);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+/* --- brand ------------------------------------------------------------- */
+
+.brand {
+    top: 16px;
+    left: 16px;
+    padding: 10px 14px 10px 11px;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+}
+
+.brand-mark {
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    /* Sun to shade, on the diagonal. The mark is the product in one square. */
+    background: linear-gradient(135deg, var(--sun) 0%, #b4763f 42%, var(--shade) 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35),
+                0 2px 6px rgba(59, 59, 109, 0.3);
+}
+
+.brand-title {
+    font-size: 14px;
+    font-weight: 650;
+    letter-spacing: -0.012em;
+    line-height: 1.2;
+}
+
+.brand-sub {
+    font-size: 11.5px;
+    color: var(--ink-3);
+    letter-spacing: 0.005em;
+    font-variant-numeric: tabular-nums;
+}
+
+/* --- dock (the controls) ----------------------------------------------- */
+
+.dock {
+    bottom: 16px;
+    left: 16px;
+    width: 296px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.field-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 9px;
+}
+
+.field-label {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.075em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+}
+
+.field-value {
+    font-size: 13px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+}
+
+.field-value.is-clock {
+    font-size: 17px;
+    font-weight: 660;
+    letter-spacing: -0.02em;
+}
+
+.field-foot {
+    margin-top: 7px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--ink-3);
+}
+
+/* --- range inputs ------------------------------------------------------ */
+
+/* One class for both sliders. The track paints itself from --track, which each
+   component sets to a gradient of its own meaning: hours of the day for the
+   clock, sun-to-shade for the preference. The thumb is deliberately plain --
+   the track is already carrying colour, and a coloured thumb on a coloured
+   track leaves nothing for the eye to hold on to. */
+.range {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 22px;
     margin: 0;
+    background: transparent;
+    cursor: grab;
+    display: block;
+}
+
+.range:active { cursor: grabbing; }
+
+.range::-webkit-slider-runnable-track {
+    height: 8px;
+    border-radius: 999px;
+    background: var(--track, var(--surface-3));
+    box-shadow: inset 0 0 0 1px rgba(28, 29, 33, 0.1),
+                inset 0 1px 2px rgba(28, 29, 33, 0.14);
+}
+
+.range::-moz-range-track {
+    height: 8px;
+    border-radius: 999px;
+    background: var(--track, var(--surface-3));
+    box-shadow: inset 0 0 0 1px rgba(28, 29, 33, 0.1),
+                inset 0 1px 2px rgba(28, 29, 33, 0.14);
+}
+
+.range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin-top: -5px; /* (8px track - 18px thumb) / 2 */
+    border-radius: 50%;
+    background: #fff;
+    border: 1px solid rgba(28, 29, 33, 0.16);
+    box-shadow: 0 1px 2px rgba(28, 29, 33, 0.2),
+                0 3px 8px -2px rgba(28, 29, 33, 0.28);
+    transition: transform 120ms var(--ease), box-shadow 120ms var(--ease);
+}
+
+.range::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    border: 1px solid rgba(28, 29, 33, 0.16);
+    box-shadow: 0 1px 2px rgba(28, 29, 33, 0.2),
+                0 3px 8px -2px rgba(28, 29, 33, 0.28);
+    transition: transform 120ms var(--ease), box-shadow 120ms var(--ease);
+}
+
+.range:hover::-webkit-slider-thumb { transform: scale(1.1); }
+.range:hover::-moz-range-thumb { transform: scale(1.1); }
+.range:active::-webkit-slider-thumb { transform: scale(1.16); }
+.range:active::-moz-range-thumb { transform: scale(1.16); }
+
+/* Keyboard focus only -- a ring that appears on every click is noise, but a
+   slider with no visible focus is unusable without a mouse. */
+.range:focus { outline: none; }
+.range:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35),
+                0 1px 2px rgba(28, 29, 33, 0.2);
+}
+.range:focus-visible::-moz-range-thumb {
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35),
+                0 1px 2px rgba(28, 29, 33, 0.2);
+}
+
+/* The detent under the shade slider's centre: alpha 0 is "shortest path", a
+   real position worth being able to find by eye. */
+.range-wrap { position: relative; }
+
+.range-detent {
+    position: absolute;
+    top: 3px;
+    left: 50%;
+    width: 1px;
+    height: 8px;
+    margin-left: -0.5px;
+    border-radius: 1px;
+    background: rgba(28, 29, 33, 0.28);
+    pointer-events: none;
+}
+
+/* --- notes, badges ----------------------------------------------------- */
+
+.note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 11px;
+    border-radius: var(--r-md);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.note-night {
+    color: #e8e9f4;
+    background: linear-gradient(135deg, #2b2f4e, #1d2036);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.note-error {
+    color: #7f1d1d;
+    background: rgba(185, 28, 28, 0.09);
+    box-shadow: inset 0 0 0 1px rgba(185, 28, 28, 0.18);
+}
+
+.note-icon { flex-shrink: 0; margin-top: 1px; }
+
+/* --- buttons ----------------------------------------------------------- */
+
+.btn {
+    font: inherit;
+    font-size: 12px;
+    font-weight: 550;
+    color: var(--ink-2);
+    padding: 6px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--panel-brd);
+    background: rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+    transition: background 120ms var(--ease), color 120ms var(--ease),
+                border-color 120ms var(--ease), transform 120ms var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+    color: var(--ink);
+    background: #fff;
+    border-color: rgba(28, 29, 33, 0.18);
+}
+
+.btn:active:not(:disabled) { transform: translateY(1px); }
+
+.btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.btn:focus-visible {
+    outline: 2px solid rgba(37, 99, 235, 0.5);
+    outline-offset: 2px;
+}
+
+/* --- legend ------------------------------------------------------------ */
+
+.dock-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding-top: 14px;
+    border-top: 1px solid var(--panel-brd);
+}
+
+.legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    font-size: 11px;
+    color: var(--ink-2);
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+
+.swatch {
+    width: 9px;
+    height: 9px;
+    border-radius: 2.5px;
+    flex-shrink: 0;
+    box-shadow: inset 0 0 0 1px rgba(28, 29, 33, 0.14);
+}
+
+/* --- summary ----------------------------------------------------------- */
+
+.summary {
+    top: 16px;
+    right: 16px;
+    width: 314px;
+    padding: 14px 16px 15px;
+}
+
+.summary-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.summary-title {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.075em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+}
+
+/* Empty and loading states get the same vertical room as a filled card, so
+   the panel does not jump in height the moment a route arrives. */
+.summary-hint {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--ink-2);
+    font-size: 12.5px;
+    min-height: 34px;
+}
+
+.pin {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: #fff;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3),
+                0 1px 3px rgba(28, 29, 33, 0.3);
+}
+
+.pin-a { background: var(--start); }
+.pin-b { background: var(--end); }
+
+/* --- stat rows --------------------------------------------------------- */
+
+.stat {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 3px 10px;
+    padding: 9px 0;
+}
+
+.stat + .stat { border-top: 1px solid var(--panel-brd); }
+
+.stat-name {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12.5px;
+    font-weight: 550;
+}
+
+.stat-dist {
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-2);
+    text-align: right;
+}
+
+.stat-bar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-top: 2px;
+}
+
+/* The bar is the comparison. Two rows, same scale, and the difference between
+   the routes is a length you can see without reading a number. */
+.bar {
+    flex: 1;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    box-shadow: inset 0 0 0 1px rgba(28, 29, 33, 0.07);
+    overflow: hidden;
+}
+
+.bar-fill {
+    /* A percentage width is ignored on an inline box, and a <span> is inline
+       until told otherwise -- so without this the fill is always zero wide. */
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    transition: width 320ms var(--ease);
+}
+
+.stat-share {
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-2);
+    /* Wide enough for "100% shade" on one line. Wrapping it doubles the row's
+       height, and the two rows then stop lining up with each other. */
+    width: 68px;
+    white-space: nowrap;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.dash {
+    width: 10px;
+    height: 0;
+    flex-shrink: 0;
+    border-top: 2px dashed var(--baseline);
+}
+
+.line {
+    width: 10px;
+    height: 3px;
+    flex-shrink: 0;
+    border-radius: 2px;
+    background: var(--route);
+}
+
+.verdict {
+    margin-top: 11px;
+    padding-top: 11px;
+    border-top: 1px solid var(--panel-brd);
+    font-size: 12.5px;
+    color: var(--ink-2);
+}
+
+.verdict strong {
+    color: var(--ink);
+    font-weight: 620;
+    font-variant-numeric: tabular-nums;
+}
+
+.summary-error { color: var(--danger); font-size: 12.5px; }
+
+/* --- spinner ----------------------------------------------------------- */
+
+.spinner {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    border: 2px solid rgba(37, 99, 235, 0.22);
+    border-top-color: var(--route);
+    animation: spin 640ms linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- map markers ------------------------------------------------------- */
+
+.marker {
+    width: 22px;
+    height: 22px;
+    border-radius: 50% 50% 50% 2px;
+    transform: rotate(-45deg);
+    display: grid;
+    place-items: center;
+    border: 2px solid #fff;
+    box-shadow: 0 2px 5px rgba(28, 29, 33, 0.35);
+    cursor: pointer;
+}
+
+.marker span {
+    /* Blocked, because `transform` does nothing to a non-replaced inline box --
+       the letter would ride along with the pin's -45deg and land on its side. */
+    display: block;
+    transform: rotate(45deg);
+    font: 650 10px/1 var(--font-sans);
+    color: #fff;
+}
+
+.marker-a { background: var(--start); }
+.marker-b { background: var(--end); }
+
+/* --- maplibre's own furniture ------------------------------------------ */
+
+/* Its controls ship square and opaque. Left alone they are the one part of the
+   screen that does not belong to this design. */
+.maplibregl-ctrl-top-right { top: 8px; right: 8px; }
+
+.maplibregl-ctrl-group {
+    border-radius: var(--r-md) !important;
+    overflow: hidden;
+    background: var(--panel-bg) !important;
+    -webkit-backdrop-filter: var(--panel-blur);
+    backdrop-filter: var(--panel-blur);
+    border: 1px solid var(--panel-brd);
+    box-shadow: var(--panel-shadow), inset 0 1px 0 var(--panel-hi) !important;
+}
+
+.maplibregl-ctrl-group button + button { border-top: 1px solid var(--panel-brd); }
+
+.maplibregl-ctrl-group button:hover { background: rgba(255, 255, 255, 0.75); }
+
+.maplibregl-ctrl-scale {
+    background: var(--panel-bg) !important;
+    -webkit-backdrop-filter: var(--panel-blur);
+    backdrop-filter: var(--panel-blur);
+    border-color: var(--panel-brd) !important;
+    border-radius: 0 0 var(--r-sm) var(--r-sm);
+    color: var(--ink-2);
+    font: 500 10px/1.6 var(--font-sans) !important;
+    font-variant-numeric: tabular-nums;
+    padding: 0 6px 1px;
+}
+
+.maplibregl-ctrl-attrib {
+    background: rgba(252, 251, 249, 0.72) !important;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    border-radius: var(--r-sm) 0 0 0;
+    font-size: 10.5px !important;
+}
+
+.maplibregl-ctrl-attrib a { color: var(--ink-2); }
+
+/* --- small screens ------------------------------------------------------ */
+
+/* The panels are sized for a desktop map. On a phone they would cover the city
+   they are annotating, so they become a single column that shares the width
+   and leaves the middle of the map clear. */
+@media (max-width: 720px) {
+    .summary {
+        top: auto;
+        bottom: 12px;
+        left: 12px;
+        right: 12px;
+        width: auto;
+        order: 2;
+    }
+
+    .dock {
+        bottom: auto;
+        top: 74px;
+        left: 12px;
+        right: 12px;
+        width: auto;
+        padding: 13px 14px;
+        gap: 13px;
+    }
+
+    .brand { top: 12px; left: 12px; right: 12px; }
+
+    .dock-foot { padding-top: 11px; }
+
+    /* The summary now occupies the corner the zoom buttons were in. Touch has
+       pinch-zoom already, so they are the ones that give way -- but the
+       attribution is a licence term and stays, lifted clear of the card. */
+    .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group,
+    .maplibregl-ctrl-bottom-right .maplibregl-ctrl-scale { display: none; }
+
+    .summary { bottom: 34px; }
+}
+
+/* Motion is decoration here -- every number is also written out. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* --- service status ------------------------------------------------------ */
+
+/* Top centre, and only ever visible when something is actually wrong. It sits
+   between the two top panels on purpose: the news is about the whole app, not
+   about either of them. */
+.status {
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 15px;
+    border-radius: 999px;
+    font-size: 12.5px;
+    color: #7f1d1d;
+    max-width: min(420px, calc(100vw - 32px));
+}
+
+.status-dot {
+    width: 7px;
+    height: 7px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 0 3px rgba(185, 28, 28, 0.16);
+}
+
+@media (max-width: 720px) {
+    /* The brand has the top row to itself on a phone; below it is the dock. */
+    .status { top: 62px; }
 }
