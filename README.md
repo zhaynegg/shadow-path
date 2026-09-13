@@ -219,6 +219,21 @@ height_source: "osm_height" | "osm_levels" | "manual" | "type_prior"
 With a third of shadow-mass resting on priors, greying out low-confidence
 shadows is honest rather than decorative.
 
+**A tag is not automatically a measurement.** Four Astana buildings carry
+`height=0` and a fifth `building:levels=0`, none with another tag to fall back
+on. Parsed as a number, zero wins the chain — it outranks the prior and the
+fallback, and is beaten only by a hand survey — so a hotel and three apartment
+blocks, up to 1,766 m² of footprint, stood 0 m tall and cast no shadow anywhere
+on the map. Nothing errored. They were simply gone, and the provenance column
+said `osm_height`, which is to say it said they had been measured.
+
+So `parse_numeric` returns nan for anything at or below zero, and those five
+fall through to the prior like any other untagged building. That is not
+pretending to know their height; it is declining to treat a data-entry slip as a
+survey. The same column also holds `ё` twice and «Многофункциональный комплекс»
+once, which never parsed to a number and so were never a problem — the danger
+is junk that happens to be numeric.
+
 ### Closing the gap
 
 The untagged gap is concentrated, which makes it a bounded task:
@@ -232,10 +247,38 @@ The untagged gap is concentrated, which makes it a bounded task:
 `scripts/export_survey_queue.py` writes those buildings to
 `data/survey_queue.csv` in priority order with an OSM link each. The top 1,000
 are median 1,867 m² and mostly `apartments` — storeys countable off imagery in
-seconds. Fill the `levels` column, load it as a `height_override` table keyed by
-`(osm_element, osm_id)`, and contribute the same data back to OSM.
+seconds. The counts land in `data/height_overrides.csv` keyed by
+`(osm_element, osm_id)`, at the top of the height chain, and belong back in OSM
+as well.
 
 Keeping overrides local means the survey isn't blocked on OSM edit cycles.
+
+Doing that from a spreadsheet means copying an id, pasting a URL, waiting for a
+map, finding the building and coming back, 2,500 times, so
+`scripts/survey_heights.py` serves a page that does the fetching:
+
+```bash
+cd backend && uv run python scripts/survey_heights.py    # localhost:8001
+```
+
+One building at a time, already framed with its footprint outlined. Type the
+count, press enter, and it saves and advances. Four things it does on purpose:
+
+- **Resumes** where the counting stopped, so this is not one long sitting.
+- **`s` skips**, into `data/survey_skipped.csv` rather than the overrides — a
+  building you cannot read is better left to the prior than given a guess
+  wearing an override's rank, and it is not offered again.
+- **Corrections replace.** `load_overrides` refuses a file with duplicate keys,
+  so appending a fix would break every build after it.
+- **Hides the prior** behind `p`. Shown by default it is an anchor, and a
+  surveyor who has just read "10" is measurably likelier to count ten.
+
+Imagery is **Esri World Imagery**, which is licensed for tracing into OSM.
+That is not incidental — Google and Bing are ruled out for the same reason
+recorded above, and it is the whole reason these counts can go back to OSM at
+all. Mapillary would be better for counting storeys, but Astana's coverage is
+arterials and the centre: the outer residential districts, where the untagged
+buildings are, have almost none.
 
 ### Latitude changes the product
 
@@ -317,6 +360,7 @@ backend/
     height_coverage.py       measure OSM height coverage + prior accuracy
     height_neighbours.py     do the neighbours predict height? (spatial CV)
     export_survey_queue.py   emit the buildings worth surveying, by priority
+    survey_heights.py        count storeys off imagery, one building at a time
     export_fixtures.py       write shadow GeoJSON fixtures for the frontend
     export_shadow_tiles.py   a .pmtiles layer per daylight hour, + index.json
     fetch_trees.py           cache OSM tree rows and points
@@ -333,7 +377,7 @@ backend/
       scoring.py             edge sub-segmentation + shade fraction
       routing.py             weighted A*, baseline route, stats
   tests/
-    test_scoring.py, test_routing.py, test_api.py
+    test_scoring.py, test_routing.py, test_api.py, test_buildings.py
 
 frontend/src/
   api/client.ts              typed fetch; mirrors main.py and the tile manifest

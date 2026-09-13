@@ -27,11 +27,25 @@ MIN_GROUP = 10
 
 
 def parse_numeric(value: object) -> float:
-    """Pull a leading number out of a messy OSM tag ('12', '12 m', '3,5')."""
+    """Pull a leading number out of a messy OSM tag ('12', '12 m', '3,5').
+
+    Zero and below come back as nan, not as a number. Every caller is reading a
+    height or a storey count, and there is no such thing as a building 0 m tall
+    -- it is a typo or a placeholder somebody saved. Kept as 0.0 it ranks as a
+    *measurement*, above both the prior and the fallback, and a hotel and three
+    apartment blocks in Astana cast no shadow at all because OSM said
+    `height=0`. A fifth had `building:levels=0`.
+
+    Letting them fall through to the prior is not pretending to know the answer;
+    it is declining to treat a data-entry slip as a survey.
+    """
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return np.nan
     match = re.match(r"^\s*([0-9]+(?:[.,][0-9]+)?)", str(value))
-    return float(match.group(1).replace(",", ".")) if match else np.nan
+    if match is None:
+        return np.nan
+    number = float(match.group(1).replace(",", "."))
+    return number if number > 0 else np.nan
 
 
 def load_overrides(path: Path) -> dict[tuple[str, int], float]:
