@@ -1,10 +1,10 @@
+import { toMinutes } from '../../lib/stamps'
+
 type TimeSliderProp = {
     labels: string[],
     value: number,
     onChange: (index: number) => void
 }
-
-const toMinutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3))
 
 // The sky over Astana, as a handful of stops. The track is painted with these
 // rather than a flat grey because the slider's whole subject is the sun: where

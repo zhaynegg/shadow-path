@@ -1,3 +1,5 @@
+from itertools import pairwise
+
 import geopandas as gpd
 import networkx as nx
 import osmnx as ox
@@ -5,7 +7,6 @@ import shapely
 from shapely.geometry import Point
 
 from backend.config import CRS, GRAPH_RADIUS
-
 
 # A click a little off a pavement is normal; a click across town is not. Beyond
 # this, the nearest node is not a reasonable stand-in for what the user meant.
@@ -86,7 +87,7 @@ def route(graph, scored, origin, destination, alpha) -> dict:
 
     distance = 0.0
     shaded = 0.0
-    for u, v in zip(path, path[1:]):
+    for u, v in pairwise(path):
         _, data = min(graph[u][v].items(), key=lambda kv: kv[1]["shade_weight"])
         distance += data["length"]
         shaded += data["length"] * data["shade_fraction"]

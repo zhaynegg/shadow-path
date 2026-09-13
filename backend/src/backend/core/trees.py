@@ -16,7 +16,9 @@ import datetime as dt
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
+import shapely
 from shapely.geometry import Point
 
 from backend.config import LAT, LON
@@ -25,8 +27,51 @@ TREES = "astana_trees.parquet"
 
 # Canopy detected from Sentinel-2 by scripts/detect_trees.py. OSM has mapped
 # 0.1% of the streets here; this reaches 62%. Already polygons, so unlike the
-# OSM rows it needs no buffering.
+# OSM rows it needs no buffering -- but it does need rounding. See below.
 CANOPY = "astana_canopy.parquet"
+
+# Sentinel-2 resolves 10 m, and the detector returns one square per lit pixel,
+# so the cache is a lattice: 77,654 polygons, three quarters of them a single
+# 10 x 10 m square, every corner on the same grid. That is the sensor's shape,
+# not a tree's, and it survives all the way onto the map -- a boulevard of
+# poplars drawn as a staircase of boxes.
+CELL_M = 10.0
+
+# Segments per quarter circle, so 4 draws a crown as a 16-gon. shapely's default
+# of 8 spends 51 vertices where the pixel square spent 5, and every one of them
+# is paid for again downstream -- in cast_shadow's hull, in the city-wide union,
+# and in every edge intersection scored against it. That is what took a tile
+# stamp from ~37s to ~4m15s. Measured city-wide against the squares' 28.1 km2:
+#
+#     quad_segs=8   32-gon   7.2M vertices
+#     quad_segs=4   16-gon   3.6M           <- here
+#     quad_segs=2    8-gon   2.3M
+#
+# This is now purely a cost and detail knob: the radius below is derived from
+# whatever it is set to, so lowering it coarsens the outline without eating
+# canopy. A 16-gon of this size strays 0.11 m from a true circle, and the tiles
+# are simplified at SIMPLIFY_M = 1.0 m on the way out, so the finer arcs were
+# being computed at great expense and then thrown away.
+CROWN_QUAD_SEGS = 4
+
+# The radius that gives the polygon we actually draw the cell's own 100 m2.
+#
+# Worth being exact about, because the obvious version is wrong: buffer()
+# inscribes its n-gon in the circle of the radius it is handed, and an inscribed
+# n-gon is always the smaller of the two. Deriving this from pi*r^2 drew 97.45 m2
+# per crown at quad_segs=4, and 90.03 at quad_segs=2 -- so coarsening the outline
+# quietly ate canopy, and the two knobs were not independent at all. The n-gon's
+# own area leaves them independent:
+#
+#     area of a regular n-gon = (n/2) r^2 sin(2pi/n),  n = 4 * quad_segs
+#
+# What remains is the honest part. City-wide the crowns still come out a few
+# percent under the squares, because neighbours overlap where the squares merely
+# touched and the diagonal corners between four cells go uncovered. Erring small
+# is the right direction -- every other guess in this file is written to avoid
+# inventing shade.
+CROWN_FROM_CELL_M = float(np.sqrt(
+    CELL_M**2 / (2 * CROWN_QUAD_SEGS * np.sin(np.pi / (2 * CROWN_QUAD_SEGS)))))
 
 # Half the crown width of a mature boulevard tree. A guess, and the single
 # number that decides how much ground a tree row covers -- 1.2 km of planting
@@ -119,10 +164,51 @@ def load_canopy(cache_dir: Path, radius: float | None = None) -> gpd.GeoDataFram
         centre = gpd.GeoSeries([Point(LON, LAT)], crs=4326).to_crs(gdf.crs).iloc[0]
         gdf = gdf[gdf.geometry.distance(centre) <= radius]
 
-    gdf = gdf.copy()
-    gdf["height_m"] = TREE_HEIGHT_M
-    gdf["height_source"] = CANOPY_SOURCE
-    return gdf
+    rounded = gpd.GeoDataFrame(geometry=round_cells(gdf.geometry.values), crs=gdf.crs)
+    rounded["height_m"] = TREE_HEIGHT_M
+    rounded["height_source"] = CANOPY_SOURCE
+    return rounded
+
+
+def cell_centres(geoms) -> np.ndarray:
+    """The centre of every 10 m cell the detector lit.
+
+    The polygons are unions of grid cells and their bounds sit on the lattice,
+    so stepping from `minx + CELL/2` lands on centres exactly -- no need to know
+    where the grid's origin is, only that a polygon is made of whole cells.
+    Multi-cell blobs are not always rectangles, so each candidate is tested
+    against the polygon rather than assumed.
+    """
+    found = []
+    for geom in geoms:
+        minx, miny, maxx, maxy = geom.bounds
+        x, y = np.meshgrid(np.arange(minx + CELL_M / 2, maxx, CELL_M),
+                           np.arange(miny + CELL_M / 2, maxy, CELL_M))
+        points = shapely.points(x.ravel(), y.ravel())
+        found.append(points[shapely.intersects(geom, points)])
+    return np.concatenate(found) if found else np.array([])
+
+
+def round_cells(geoms) -> np.ndarray:
+    """Pixel squares in, round crowns out.
+
+    A crown at every cell centre, merged back into blobs. Merging is what keeps
+    this affordable: a run of trees becomes one rounded blob rather than the
+    dozen overlapping discs it was built from, so the caster count comes out
+    unchanged -- 77,654 squares in, 77,654 blobs out. The count is not the cost,
+    though: those blobs carry 6.7x the vertices the squares did, and that is
+    paid again at every step that touches them. See CROWN_QUAD_SEGS.
+
+    Dissolving is free of meaning here: every crown carries the same guessed
+    height, so there is nothing to lose by merging them.
+    """
+    if len(geoms) == 0:
+        return np.array([])
+
+    crowns = shapely.buffer(cell_centres(geoms), CROWN_FROM_CELL_M,
+                            quad_segs=CROWN_QUAD_SEGS)
+    merged = shapely.union_all(crowns)
+    return np.array(merged.geoms if hasattr(merged, "geoms") else [merged])
 
 
 def shading_geometry(

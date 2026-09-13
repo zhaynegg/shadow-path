@@ -1,4 +1,5 @@
 import datetime as dt
+from itertools import pairwise
 
 import geopandas as gpd
 import numpy as np
@@ -45,7 +46,7 @@ def cast_shadow(geom, height_m: float, altitude: float, azimuth: float):
             coords = list(ring.coords)
             parts.extend(
                 Polygon([a, b, (b[0] + dx, b[1] + dy), (a[0] + dx, a[1] + dy)])
-                for a, b in zip(coords, coords[1:])
+                for a, b in pairwise(coords)
             )
     return shapely.union_all(parts)
 

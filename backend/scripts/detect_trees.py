@@ -138,7 +138,7 @@ def read_stack(item: dict, bounds) -> tuple[np.ndarray, rasterio.Affine]:
 
     # Indices do the real separating work: NDVI for greenness, NDWI for water,
     # and the SWIR ratio for the woody-versus-herbaceous difference.
-    blue, green, red, nir, rededge, swir16, swir22 = stack
+    _blue, green, red, nir, rededge, swir16, swir22 = stack
     eps = 1e-6
     ndvi = (nir - red) / (nir + red + eps)
     ndwi = (green - nir) / (green + nir + eps)
@@ -153,8 +153,8 @@ def read_stack(item: dict, bounds) -> tuple[np.ndarray, rasterio.Affine]:
 def label_geometry(cache_dir: Path, place: str, bounds) -> tuple[gpd.GeoSeries, gpd.GeoSeries]:
     """Where OSM says there are trees, and where it says there are not."""
     box = gpd.GeoSeries.from_wkt(
-        [f"POLYGON(({bounds[0]} {bounds[1]},{bounds[2]} {bounds[1]},"
-         f"{bounds[2]} {bounds[3]},{bounds[0]} {bounds[3]},{bounds[0]} {bounds[1]}))"],
+        [(f"POLYGON(({bounds[0]} {bounds[1]},{bounds[2]} {bounds[1]},"
+          f"{bounds[2]} {bounds[3]},{bounds[0]} {bounds[3]},{bounds[0]} {bounds[1]}))")],
         crs=CRS,
     ).iloc[0]
 
