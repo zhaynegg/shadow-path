@@ -68,11 +68,19 @@ const cityMinutes = () => {
     return part('hour') * 60 + part('minute')
 }
 
-// Open on the stamp nearest the city's clock. Nearest rather than the top of
-// the hour, because sub-hour stamps exist exactly where an hour is too coarse
+// Open on the slider stop nearest the city's clock. Nearest rather than the top
+// of the hour, because sub-hour stamps exist exactly where an hour is too coarse
 // -- rounding down to one there would throw away the resolution they were built
-// for. Landing outside daylight would open the map bare, which reads as broken
-// rather than as nightfall, and picking from the manifest cannot do that.
+// for.
+//
+// This used to choose from the manifest alone, so that the map could never open
+// outside daylight: a bare map was held to read as broken rather than as
+// nightfall. The fix for that turned out to belong elsewhere -- the panel now
+// says the sun is down in words -- and the clamp was left telling a worse lie
+// in its place. Opened at 21:25 it showed 18:20, the last stamp of the day,
+// with three hours of shadows that had already gone. A clock that quietly
+// disagrees with the clock is the harder error to spot, because nothing about
+// it looks empty.
 const nearestStamp = (minutes: number, times: string[]) =>
     times.length
         ? times.reduce((best, time) =>
@@ -229,7 +237,11 @@ function MapView() {
 
         fetchShadowManifest(controller.signal)
             .then(loaded => {
-                const start = nearestStamp(cityMinutes(), loaded.times)
+                // Every stop the slider has, not only the lit ones, so the map
+                // opens on the hour it actually is. After dusk that means no
+                // shadow layer matches and the map opens bare -- which is the
+                // true picture of Astana at 21:00, and the panel says so.
+                const start = nearestStamp(cityMinutes(), sliderTimes(loaded))
                 initialTimeRef.current = start
                 setManifest(loaded)
                 setTime(start)
