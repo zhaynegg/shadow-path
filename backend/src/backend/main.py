@@ -17,7 +17,7 @@ from backend.core.graph import load_graph
 from backend.core.routing import MAX_ALPHA, plan
 from backend.core.scoring import score_edges, score_edges_layered
 from backend.core.shadows import MAX_SHADOW_M, layered_field
-from backend.core.solar import sun_position
+from backend.core.solar import LOW_SUN_MINUTES, sun_position
 from backend.core.trees import CANOPY_OPACITY, CANOPY_SOURCES, shading_geometry
 
 # The map draws shadows from precomputed tiles built by
@@ -48,6 +48,20 @@ class RouteRequest(BaseModel):
     date: dt.date
 
     hour: int = Field(12, ge=0, le=23)
+
+    # Minutes past the hour, and only the ones a tileset can exist for. Low-sun
+    # hours are cut into thirds because an hour is too coarse a step down there
+    # -- see daylight_times. Constrained rather than free for the same reason
+    # the date is bounded: every distinct stamp is its own scored graph, and
+    # 0-59 would let one caller ask for sixty of them an hour.
+    minute: int = Field(0)
+
+    @field_validator("minute")
+    @classmethod
+    def on_a_step(cls, value: int) -> int:
+        if value not in LOW_SUN_MINUTES:
+            raise ValueError(f"minute must be one of {list(LOW_SUN_MINUTES)}")
+        return value
 
     # Signed: positive routes towards shade, negative towards sun, 0 is the
     # plain shortest path. Bounded on both sides rather than left open, because
@@ -84,16 +98,19 @@ def routing_buildings() -> gpd.GeoDataFrame:
 def graph():
     return load_graph(CACHE_DIR, GRAPH_RADIUS)
 
-@lru_cache(maxsize=48)
-def scored_edges(date: dt.date, hour: int):
+@lru_cache(maxsize=96)
+def scored_edges(date: dt.date, hour: int, minute: int):
     """The walking graph with every edge weighted by how shaded it is.
 
-    Keyed on the date as well as the hour, because 13:00 in June and 13:00 in
-    December are different suns -- an hour-only key would go on serving one for
-    the other the first time a rebuild rolled the map forward. Two days of hours
-    fit, so a rollover at midnight does not evict the day still being asked for.
+    Keyed on the date as well as the time, because 13:00 in June and 13:00 in
+    December are different suns -- a time-only key would go on serving one for
+    the other the first time a rebuild rolled the map forward.
+
+    Sized for two days: a date runs to 29 stamps at midsummer, so 96 holds the
+    longest two in the year and a rollover at midnight cannot evict the day
+    still being asked for.
     """
-    when = dt.datetime.combine(date, dt.time(hour), tzinfo=TZ)
+    when = dt.datetime.combine(date, dt.time(hour, minute), tzinfo=TZ)
     altitude, azimuth = sun_position(LAT, LON, when)
     edges = ox.graph_to_gdfs(graph(), nodes=False)
     if altitude <= 0:
@@ -117,7 +134,7 @@ def health():
 @app.post("/api/route")
 def route_endpoint(request: RouteRequest) -> dict:
     try:
-        result = plan(graph(), scored_edges(request.date, request.hour),
+        result = plan(graph(), scored_edges(request.date, request.hour, request.minute),
             request.origin, request.destination, request.alpha)
     except ValueError as exc:
         # A bad pair of points is the caller's mistake, not a server fault.

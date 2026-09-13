@@ -13,10 +13,13 @@ import {
 
 const protocol = new Protocol({ metadata: true })
 
-// Every hour of the Astana day the backend will answer for. Vite proxies /api
-// backend in dev (see vite.config.ts), so this stays same-origin.
-const HOURS = Array.from({ length: 24 }, (_, hour) => hour)
-const HOUR_LABELS = HOURS.map(hour => `${String(hour).padStart(2, '0')}:00`)
+// Vite proxies /api to the backend in dev (see vite.config.ts), so this stays
+// same-origin.
+//
+// Every whole hour of the Astana day. The manifest adds the sub-hour stamps on
+// top; these are here so the clock can always be moved into the night, which is
+// a real state of the world rather than an error.
+const WHOLE_HOURS = Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`)
 const INITIAL_ALPHA = 6
 const INITIAL_ZOOM = 14
 
@@ -30,48 +33,130 @@ const BASELINE_COLOUR = '#9ca3af'
 
 const EMPTY = { type: 'FeatureCollection' as const, features: [] }
 
-// Which hours have a tileset comes from the manifest, because it is a property
-// of the date the tiles were built for -- 16 hours in June, 8 in December. The
-// slider still runs the whole 24, so it can always be moved somewhere the sun
-// is down; that is a real state of the world, not an error.
-const isDaylight = (hour: number, manifest: ShadowManifest | null) =>
-    manifest ? manifest.hours.includes(hour) : true
+// Which stamps have a tileset comes from the manifest, because it is a property
+// of the date the tiles were built for -- both how long daylight is and how
+// finely each hour is cut.
+const isDaylight = (time: string, manifest: ShadowManifest | null) =>
+    manifest ? manifest.times.includes(time) : true
+
+// Where the slider can stop. Not a uniform scale, deliberately: the stamps are
+// twenty minutes apart at dawn and dusk and an hour apart in the middle of the
+// day, so the clock moves in finer steps exactly where the picture changes
+// faster. Sorting "HH:MM" as text is chronological.
+const sliderTimes = (manifest: ShadowManifest | null) =>
+    manifest ? [...new Set([...WHOLE_HOURS, ...manifest.times])].sort() : WHOLE_HOURS
+
+const toMinutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3))
 
 // The city's own clock, not the viewer's -- the shadows are Astana's whoever is
-// looking at them.
-const cityHour = () => Number(new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Almaty',
-    hour: 'numeric',
-    hourCycle: 'h23',
-}).format(new Date()))
+// looking at them. To the minute, because the stamps are now finer than an hour.
+const cityMinutes = () => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Almaty', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).formatToParts(new Date())
+    const part = (type: string) => Number(parts.find(p => p.type === type)?.value ?? 0)
+    return part('hour') * 60 + part('minute')
+}
 
-// Open inside daylight: land outside it and the map opens bare, which reads as
-// broken rather than as nightfall. `hours` is sorted, so the ends are the
-// first and last light of whatever date the tiles are for.
-const clampToDaylight = (hour: number, hours: number[]) =>
-    hours.length ? Math.min(Math.max(hour, hours[0]), hours[hours.length - 1]) : hour
+// Open on the stamp nearest the city's clock. Nearest rather than the top of
+// the hour, because sub-hour stamps exist exactly where an hour is too coarse
+// -- rounding down to one there would throw away the resolution they were built
+// for. Landing outside daylight would open the map bare, which reads as broken
+// rather than as nightfall, and picking from the manifest cannot do that.
+const nearestStamp = (minutes: number, times: string[]) =>
+    times.length
+        ? times.reduce((best, time) =>
+            Math.abs(toMinutes(time) - minutes) < Math.abs(toMinutes(best) - minutes) ? time : best)
+        : WHOLE_HOURS[12]
 
-// Every hour gets its own source and layer, and changing the clock only flips
+// Every stamp gets its own source and layer, and changing the clock only flips
 // which one is visible. Pointing one source at a new file means asking maplibre
 // to reload it -- which raced itself when the slider was dragged and left the
-// wrong hour on screen. A visibility flip is local and cannot race.
-const shadowTiles = (hour: number) =>
-    `pmtiles:///shadows/${String(hour).padStart(2, '0')}.pmtiles`
-const shadowSource = (hour: number) => `shadows-${hour}`
-const shadowLayer = (hour: number) => `shadow-${hour}`
+// wrong stamp on screen. A visibility flip is local and cannot race.
+const stem = (time: string) => time.replace(':', '')
+const shadowTiles = (time: string) => `pmtiles:///shadows/${stem(time)}.pmtiles`
+const shadowSource = (time: string) => `shadows-${stem(time)}`
+const shadowLayer = (time: string) => `shadow-${stem(time)}`
 
-const SHADOW_COLOUR = '#4a4a68'
-const SHADOW_OPACITY = 0.3
+// Hue carries what kind of shade it is, opacity carries how much of it there
+// is. Keeping those on separate channels is what lets a tree read as a tree
+// without overstating how dark it is.
+const SHADOW_COLOUR = '#3b3b6d'
+const CANOPY_COLOUR = '#2f6e46'
+const SHADOW_OPACITY = 0.38
 
 // A crown is not a wall. Tiles tag each blob 'solid' or 'canopy', and canopy is
 // drawn through the same factor the router weights it by -- CANOPY_OPACITY in
 // core/trees.py. If you change one, change the other: a map that shades a
 // tree-lined street darker than the route thinks it is, is lying to the reader.
+// The green above is free of that: it changes which shade you are looking at,
+// never how much of it there is.
 const CANOPY_OPACITY = 0.7
 const FILL_OPACITY: maplibregl.ExpressionSpecification = [
     'case', ['==', ['get', 'kind'], 'canopy'],
     SHADOW_OPACITY * CANOPY_OPACITY,
     SHADOW_OPACITY,
+]
+const FILL_COLOUR: maplibregl.ExpressionSpecification = [
+    'case', ['==', ['get', 'kind'], 'canopy'],
+    CANOPY_COLOUR,
+    SHADOW_COLOUR,
+]
+
+// Warm, and lighter than the #cccccc ground, because everything shaded on this
+// map is cool and darker. Warm against cool separates a building from a shadow
+// before any difference in value has to, which matters at the zoom where a
+// footprint is only a few pixels across.
+const BUILDING_COLOUR = '#f4f1ea'
+const BUILDING_OUTLINE = '#b3a897'
+const BUILDING_FILTER: maplibregl.ExpressionSpecification =
+    ['in', ['get', 'kind'], ['literal', ['building', 'building_part']]]
+
+// The only thing on this map that is neither shade, structure, nor route.
+// Muted on purpose: the route is #2563eb, and a saturated lake would compete
+// with the one line the reader is actually meant to follow.
+const WATER_COLOUR = '#a6c6da'
+const WATER_LINE_COLOUR = '#8cb0c6'
+const WATER_LAYERS = new Set(['water', 'water_stream', 'water_river'])
+
+const blueWater = (layer: maplibregl.LayerSpecification): maplibregl.LayerSpecification => {
+    if (!WATER_LAYERS.has(layer.id)) return layer
+    if (layer.type === 'line') return { ...layer, paint: { ...layer.paint, 'line-color': WATER_LINE_COLOUR } }
+    if (layer.type === 'fill') return { ...layer, paint: { ...layer.paint, 'fill-color': WATER_COLOUR } }
+    return layer
+}
+
+// Buildings are drawn after the shadows, not before, and that is the whole
+// reason a building used to be the same colour as one. cast_shadow unions the
+// footprint with its translated copy, so every blob contains the building that
+// threw it -- draw the field on top and every building in the city is filled
+// with shadow colour by its own shadow. It is also the wrong claim to make:
+// this is a ground-plane model, and shade on a roof is not somewhere anybody
+// walks. Shadows now land on the streets, which is the only place they are
+// about.
+const buildingLayers = [
+    {
+        id: 'buildings',
+        type: 'fill' as const,
+        source: 'protomaps',
+        'source-layer': 'buildings',
+        filter: BUILDING_FILTER,
+        paint: { 'fill-color': BUILDING_COLOUR },
+    },
+    {
+        // An outline only once footprints are big enough to have a shape worth
+        // seeing. Below that it is a grey haze over the whole city.
+        id: 'buildings-outline',
+        type: 'line' as const,
+        source: 'protomaps',
+        'source-layer': 'buildings',
+        filter: BUILDING_FILTER,
+        minzoom: 15,
+        paint: {
+            'line-color': BUILDING_OUTLINE,
+            'line-width': ['interpolate', ['linear'], ['zoom'], 15, 0.3, 18, 1] as maplibregl.ExpressionSpecification,
+        },
+    },
 ]
 
 // A source wants a FeatureCollection; a route is a bare geometry until wrapped.
@@ -86,19 +171,21 @@ function MapView() {
     const containerRef = useRef<HTMLDivElement>(null)
     const mapRef = useRef<maplibregl.Map | null>(null)
 
-    // The hour the style was built around. The style is built once, from the
-    // manifest, so this is read there rather than recomputed -- an hour that
+    // The stamp the style was built around. The style is built once, from the
+    // manifest, so this is read there rather than recomputed -- a clock that
     // ticked over in between would leave the slider and the map disagreeing.
-    const initialHourRef = useRef<number | null>(null)
+    const initialTimeRef = useRef<string | null>(null)
 
     const [manifest, setManifest] = useState<ShadowManifest | null>(null)
     const [manifestError, setManifestError] = useState<string | null>(null)
-    const [hour, setHour] = useState(cityHour)
+    const [time, setTime] = useState(() => nearestStamp(cityMinutes(), WHOLE_HOURS))
     const [alpha, setAlpha] = useState(INITIAL_ALPHA)
     const [points, setPoints] = useState<LatLon[]>([])
     const [plan, setPlan] = useState<RoutePlan | null>(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
+
+    const times = sliderTimes(manifest)
 
     // --- what the tiles are, before any of them can be drawn ---------------
     useEffect(() => {
@@ -106,10 +193,10 @@ function MapView() {
 
         fetchShadowManifest(controller.signal)
             .then(loaded => {
-                const start = clampToDaylight(cityHour(), loaded.hours)
-                initialHourRef.current = start
+                const start = nearestStamp(cityMinutes(), loaded.times)
+                initialTimeRef.current = start
                 setManifest(loaded)
-                setHour(start)
+                setTime(start)
             })
             .catch((err: Error) => {
                 // An abort is us cancelling on purpose, not a failure.
@@ -125,22 +212,22 @@ function MapView() {
 
         // The shadow layers arrive with the manifest, and getLayer is undefined
         // until the style holding them has loaded. Until then the style is
-        // already showing the hour it was built around -- nothing to correct.
-        if (!map || !manifest?.hours.length) return
-        if (!map.getLayer(shadowLayer(manifest.hours[0]))) return
+        // already showing the stamp it was built around -- nothing to correct.
+        if (!map || !manifest?.times.length) return
+        if (!map.getLayer(shadowLayer(manifest.times[0]))) return
 
         const timer = setTimeout(() => {
-            // At night no hour matches, every layer hides, and the map is bare
+            // At night no stamp matches, every layer hides, and the map is bare
             // -- which is the right picture when the sun is down.
-            for (const candidate of manifest.hours) {
+            for (const candidate of manifest.times) {
                 map.setLayoutProperty(shadowLayer(candidate), 'visibility',
-                    candidate === hour ? 'visible' : 'none')
+                    candidate === time ? 'visible' : 'none')
             }
         }, DEBOUNCE_MS)
 
-        // A drag across the slider passes through hours nobody stops on.
+        // A drag across the slider passes through stamps nobody stops on.
         return () => clearTimeout(timer)
-    }, [hour, manifest])
+    }, [time, manifest])
 
     // --- ask the backend for a route ---------------------------------------
     useEffect(() => {
@@ -156,7 +243,14 @@ function MapView() {
         const timer = setTimeout(() => {
             setLoading(true)
             fetchRoute(
-                { origin: points[0], destination: points[1], date: manifest.date, hour, alpha },
+                {
+                    origin: points[0], destination: points[1], date: manifest.date,
+                    // Split here rather than sent as a string: the backend keys
+                    // its scored graph on the pair, and this is the one place
+                    // that knows the stamp the map is actually showing.
+                    hour: Number(time.slice(0, 2)), minute: Number(time.slice(3)),
+                    alpha,
+                },
                 controller.signal)
                 .then(result => {
                     setPlan(result)
@@ -172,12 +266,12 @@ function MapView() {
         }, DEBOUNCE_MS)
 
         // abort() cancels a request already in flight, so a slow answer for an
-        // old hour can never arrive after a fast answer for the current one.
+        // old stamp can never arrive after a fast answer for the current one.
         return () => {
             clearTimeout(timer)
             controller.abort()
         }
-    }, [points, hour, alpha, manifest])
+    }, [points, time, alpha, manifest])
 
     // --- draw whatever came back -------------------------------------------
     useEffect(() => {
@@ -219,30 +313,35 @@ function MapView() {
                     // Shadows are tiles like the basemap, not a query: the
                     // browser pulls only the ones on screen, and they are
                     // already drawn when you arrive.
-                    ...Object.fromEntries(manifest.hours.map(hour => [
-                        shadowSource(hour),
-                        { type: 'vector' as const, url: shadowTiles(hour) },
+                    ...Object.fromEntries(manifest.times.map(stamp => [
+                        shadowSource(stamp),
+                        { type: 'vector' as const, url: shadowTiles(stamp) },
                     ])),
                     baseline: { type: 'geojson', data: EMPTY },
                     route: { type: 'geojson', data: EMPTY },
                 },
                 layers: [
-                    ...layers('protomaps', GRAYSCALE),
-                    ...manifest.hours.map(hour => ({
-                        id: shadowLayer(hour),
+                    // Its buildings layer is dropped and redrawn above the
+                    // shadows instead -- see buildingLayers.
+                    ...layers('protomaps', GRAYSCALE)
+                        .filter(layer => layer.id !== 'buildings')
+                        .map(blueWater),
+                    ...manifest.times.map(stamp => ({
+                        id: shadowLayer(stamp),
                         type: 'fill' as const,
-                        source: shadowSource(hour),
+                        source: shadowSource(stamp),
                         // The layer name inside the tilesets, set by --layer in
                         // the export script that also wrote this manifest.
                         'source-layer': manifest.layer,
                         layout: {
-                            visibility: (hour === initialHourRef.current ? 'visible' : 'none') as 'visible' | 'none',
+                            visibility: (stamp === initialTimeRef.current ? 'visible' : 'none') as 'visible' | 'none',
                         },
                         paint: {
-                            'fill-color': SHADOW_COLOUR,
+                            'fill-color': FILL_COLOUR,
                             'fill-opacity': FILL_OPACITY,
                         },
                     })),
+                    ...buildingLayers,
                     // Baseline under the route: where they overlap, the shaded
                     // route should be the one you see.
                     {
@@ -314,11 +413,12 @@ function MapView() {
                 boxShadow: '0 1px 4px rgba(0,0,0,0.25)', fontSize: 13, lineHeight: 1.4,
                 display: 'flex', flexDirection: 'column', gap: 10,
             }}>
-                <TimeSlider labels={HOUR_LABELS} value={hour} onChange={setHour} />
+                <TimeSlider labels={times} value={Math.max(0, times.indexOf(time))}
+                    onChange={index => setTime(times[index])} />
                 {/* Past dusk every shadow layer hides and the map goes bare. That is
                     the honest picture, but an empty map reads as a failure unless
                     something says why it is empty. */}
-                {!isDaylight(hour, manifest) && (
+                {!isDaylight(time, manifest) && (
                     <div style={{ color: '#6b7280' }}>
                         The sun is down over Astana. Nothing casts a shadow at this hour.
                     </div>

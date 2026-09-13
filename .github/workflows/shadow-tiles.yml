@@ -33,7 +33,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Was 45 when a date meant 13 hourly tilesets. Low-sun hours are now cut
+    # into thirds, which takes mid-September to 24 stamps and midsummer to 29.
+    # Cost is per stamp and roughly flat -- 33-43s each locally, and the low-sun
+    # ones are if anything the cheaper end -- so this scales with the count.
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v7
@@ -104,5 +108,6 @@ jobs:
           name: shadow-tiles
           path: frontend/public/shadows/
           # These are rebuilt nightly and nothing consumes them yet, so keeping
-          # a fortnight of 59 MB uploads would only be storage.
+          # a fortnight of them would only be storage -- and a day is no longer
+          # 59 MB. See the tile-size note in the README.
           retention-days: 7

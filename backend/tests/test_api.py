@@ -33,6 +33,7 @@ def valid_request(**overrides) -> dict:
         "destination": (51.1700, 71.4300),
         "date": today(),
         "hour": 13,
+        "minute": 0,
         "alpha": 3.0,
     } | overrides
 
@@ -157,15 +158,15 @@ def test_scored_edges_keys_on_the_date_not_only_the_hour(monkeypatch):
 
     june = dt.date(today().year, 6, 21)
     december = dt.date(today().year, 12, 21)
-    main.scored_edges(june, 13)
-    main.scored_edges(december, 13)
+    main.scored_edges(june, 13, 0)
+    main.scored_edges(december, 13, 0)
 
     assert [when.date() for when in seen] == [june, december]
 
     main.scored_edges.cache_clear()
 
 
-def test_scored_edges_reuses_the_same_date_and_hour(monkeypatch):
+def test_scored_edges_reuses_the_same_date_and_time(monkeypatch):
     """The other half: the cache has to actually cache, or every request
     recomputes a citywide polygon union and the whole quantise-by-hour decision
     buys nothing.
@@ -183,9 +184,60 @@ def test_scored_edges_reuses_the_same_date_and_hour(monkeypatch):
     monkeypatch.setattr(main.ox, "graph_to_gdfs", lambda graph, nodes: edges)
     main.scored_edges.cache_clear()
 
-    main.scored_edges(today(), 13)
-    main.scored_edges(today(), 13)
+    main.scored_edges(today(), 13, 0)
+    main.scored_edges(today(), 13, 0)
 
     assert len(seen) == 1
 
     main.scored_edges.cache_clear()
+
+
+def test_scored_edges_keys_on_the_minute_too(monkeypatch):
+    """The same bug one level down, and it would look even more plausible.
+
+    Low-sun hours are cut into thirds because an hour is too coarse a step
+    there -- at 17:00 an hour redraws 59% of the network. Drop the minute from
+    the key and 17:40 is served 17:00's weights, which is precisely the error
+    the split exists to remove, back again and invisible.
+    """
+    seen: list[dt.datetime] = []
+
+    def fake_sun(lat, lon, when):
+        seen.append(when)
+        return -10.0, 0.0
+
+    edges = gpd.GeoDataFrame(geometry=[LineString([(0, 0), (100, 0)])], crs=CRS)
+
+    monkeypatch.setattr(main, "sun_position", fake_sun)
+    monkeypatch.setattr(main, "graph", lambda: None)
+    monkeypatch.setattr(main.ox, "graph_to_gdfs", lambda graph, nodes: edges)
+    main.scored_edges.cache_clear()
+
+    for minute in (0, 20, 40):
+        main.scored_edges(today(), 17, minute)
+
+    assert [when.minute for when in seen] == [0, 20, 40]
+
+    main.scored_edges.cache_clear()
+
+
+@pytest.mark.parametrize("minute", [1, 10, 30, 59, -1])
+def test_minute_off_the_step_is_rejected(minute):
+    """Only the stamps a tileset can exist for. Anything else is a scored graph
+    built for a sun the map never drew, and an unbounded number of them.
+    """
+    with pytest.raises(ValidationError):
+        RouteRequest(**valid_request(minute=minute))
+
+
+@pytest.mark.parametrize("minute", [0, 20, 40])
+def test_minute_on_the_step_is_accepted(minute):
+    assert RouteRequest(**valid_request(minute=minute)).minute == minute
+
+
+def test_minute_defaults_to_the_top_of_the_hour():
+    """A caller that has not heard of sub-hour stamps still gets a valid one."""
+    fields = valid_request()
+    del fields["minute"]
+
+    assert RouteRequest(**fields).minute == 0

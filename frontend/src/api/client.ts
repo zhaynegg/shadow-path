@@ -5,13 +5,16 @@
 
 export type LatLon = [number, number]
 
-// What scripts/export_shadow_tiles.py wrote beside the tiles. Which hours have
-// a tileset is a property of the date -- 16 of them in June, 8 in December --
-// so the map reads the answer rather than assuming a daylight window that is
-// only ever right for one season. `hours` is sorted ascending.
+// What scripts/export_shadow_tiles.py wrote beside the tiles. Which stamps have
+// a tileset is a property of the date twice over -- daylight runs 16 hours in
+// June and 8 in December, and how finely each hour is cut depends on how high
+// the sun gets, since a low sun moves a shadow across a street inside the hour.
+// So the map reads the answer rather than assuming a window and a step that are
+// only ever right for one season. "HH:MM", sorted ascending; drop the colon and
+// it is the tileset filename.
 export type ShadowManifest = {
     date: string
-    hours: number[]
+    times: string[]
     layer: string
     generated_at: string
 }
@@ -61,6 +64,10 @@ export type RouteRequest = {
     // apart, and the route would avoid shade that is not on screen.
     date: string
     hour: number
+    // Minutes past the hour, and only ever 0, 20 or 40 -- the steps a low-sun
+    // hour is cut into. The backend rejects anything else, because every
+    // distinct stamp is a scored graph of its own.
+    minute: number
     alpha: number
 }
 

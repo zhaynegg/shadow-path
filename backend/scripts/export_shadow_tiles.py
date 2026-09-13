@@ -27,10 +27,11 @@ from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
+
 from backend.config import CACHE_DIR, LAT, LON, TZ, today
 from backend.core.buildings import load_buildings
 from backend.core.shadows import SIMPLIFY_M, layered_field
-from backend.core.solar import sun_position
+from backend.core.solar import daylight_times, sun_position
 from backend.core.trees import CANOPY_SOURCES, shading_geometry
 
 # Every hour uses the same layer name, so one map style can read whichever
@@ -66,11 +67,16 @@ def blobs(merged, crs, kind: str) -> gpd.GeoDataFrame:
     return frame.to_crs(4326)
 
 
-def build_hour(
-    gdf: gpd.GeoDataFrame, date: dt.date, hour: int, out_dir: Path, work_dir: Path
+def stem(when: dt.time) -> str:
+    """HHMM. Sorts as a string, needs no separator, and reads as a clock."""
+    return f"{when.hour:02d}{when.minute:02d}"
+
+
+def build_time(
+    gdf: gpd.GeoDataFrame, date: dt.date, at: dt.time, out_dir: Path, work_dir: Path
 ) -> Path | None:
-    """Write one hour's tileset. None when the sun is down and there is nothing to draw."""
-    when = dt.datetime.combine(date, dt.time(hour), tzinfo=TZ)
+    """Write one timestamp's tileset. None when there is nothing to draw."""
+    when = dt.datetime.combine(date, at, tzinfo=TZ)
     altitude, azimuth = sun_position(LAT, LON, when)
     if altitude <= 0:
         return None
@@ -86,10 +92,10 @@ def build_hour(
              for field, kind in ((opaque, "solid"), (dappled, "canopy"))
              if field is not None]
     frame = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=4326)
-    source = work_dir / f"{hour:02d}.geojson"
+    source = work_dir / f"{stem(at)}.geojson"
     frame.to_file(source, driver="GeoJSON")
 
-    tiles = out_dir / f"{hour:02d}.pmtiles"
+    tiles = out_dir / f"{stem(at)}.pmtiles"
     subprocess.run(
         [
             "tippecanoe",
@@ -110,22 +116,24 @@ def build_hour(
     return tiles
 
 
-def write_manifest(out_dir: Path, date: dt.date, hours: list[int]) -> Path:
+def write_manifest(out_dir: Path, date: dt.date, times: list[dt.time]) -> Path:
     """Record what this run produced, so the map can read it instead of guessing.
 
-    Which hours exist is a property of the date -- 16 of them in June, 8 in
-    December -- and nothing on the other side can work that out for itself.
-    A daylight window hardcoded in the frontend is a second rule that agrees
-    with this one only until the season moves. This script already knows the
-    answer; all that was missing was writing it down.
+    Which stamps exist is a property of the date, twice over. Daylight is 16
+    hours in June and 8 in December, and how finely each hour is cut depends on
+    how high the sun gets -- see daylight_times. Neither is something the
+    frontend can work out for itself, and a window hardcoded on that side is a
+    second rule that agrees with this one only until the season moves.
 
     Written last, once every tileset is on disk, so a run that dies halfway
-    through never leaves a manifest promising hours it did not build.
+    through never leaves a manifest promising stamps it did not build.
     """
     path = out_dir / MANIFEST
     path.write_text(json.dumps({
         "date": date.isoformat(),
-        "hours": hours,
+        # "HH:MM", which is both the label the slider shows and, with the colon
+        # dropped, the tileset filename.
+        "times": [t.strftime("%H:%M") for t in times],
         # Set by --layer below. The map needs the same string to style it.
         "layer": LAYER,
         # Not used for drawing -- it is how you tell a stale deploy from a
@@ -155,31 +163,38 @@ def main() -> None:
     leaf = f" + {canopy:,} trees in leaf" if canopy else " (trees bare, out of season)"
     print(f"{len(buildings):,} buildings{leaf}, {args.date}\n")
 
-    written: dict[int, Path] = {}
+    # Resolution is decided once, up front, by the sun rather than the clock:
+    # hourly where the sun is high and every 20 minutes where it is low and a
+    # shadow crosses a street inside the hour.
+    wanted = daylight_times(LAT, LON, args.date, TZ)
+    print(f"{len(wanted)} stamps, {wanted[0]:%H:%M}-{wanted[-1]:%H:%M}\n")
+
+    written: dict[dt.time, Path] = {}
     with tempfile.TemporaryDirectory() as tmp:
-        for hour in range(24):
+        for at in wanted:
             start = time.time()
-            tiles = build_hour(gdf, args.date, hour, args.out_dir, Path(tmp))
+            tiles = build_time(gdf, args.date, at, args.out_dir, Path(tmp))
             if tiles is None:
-                print(f"  {hour:02d}:00  sun down, skipped")
+                print(f"  {at:%H:%M}  sun down, skipped")
                 continue
             size = tiles.stat().st_size / 1e6
-            written[hour] = tiles
-            print(f"  {hour:02d}:00  {tiles.name}  {size:5.1f} MB  {time.time() - start:5.1f}s")
+            written[at] = tiles
+            print(f"  {at:%H:%M}  {tiles.name}  {size:5.1f} MB  {time.time() - start:5.1f}s")
 
-    # Daylight is shorter in December than in June -- 8 tilesets against 16 --
-    # so a rebuild can leave behind hours the new date has no sun for. They
-    # would ship as dead weight and, worse, still answer when the map asked.
+    # A rebuild can leave behind stamps the new date has no sun for, or, after
+    # a change to daylight_times, ones it no longer cuts the hour finely enough
+    # to want. They would ship as dead weight and, worse, still answer when the
+    # map asked.
     for stale in sorted(set(args.out_dir.glob("*.pmtiles")) - set(written.values())):
         stale.unlink()
         print(f"  {stale.name}  stale, removed")
 
-    hours = sorted(written)
-    write_manifest(args.out_dir, args.date, hours)
+    times = sorted(written)
+    write_manifest(args.out_dir, args.date, times)
 
     total = sum(p.stat().st_size for p in args.out_dir.glob("*.pmtiles")) / 1e6
-    span = f"{hours[0]:02d}-{hours[-1]:02d}" if hours else "none"
-    print(f"\n{len(hours)} tilesets, hours {span}, {total:.1f} MB total, in {args.out_dir}")
+    span = f"{times[0]:%H:%M}-{times[-1]:%H:%M}" if times else "none"
+    print(f"\n{len(times)} tilesets, {span}, {total:.1f} MB total, in {args.out_dir}")
     print(f"{MANIFEST} written for {args.date}")
 
 

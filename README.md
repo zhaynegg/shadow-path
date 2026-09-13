@@ -33,7 +33,7 @@ against sun exposure.
  └────────────────────┬───────────────────────┘
                       ▼
             data/cache/  (graphml, geoparquet)
-            edge scores are memoised per (date, hour),
+            edge scores are memoised per (date, hour, minute),
             in process — nothing on disk
 ```
 
@@ -107,15 +107,38 @@ straight-line A* heuristic admissible at any α.
 
 Steps 2 and 3 are expensive and time-dependent. Step 1 is expensive and isn't.
 
-**Quantize departure time into whole hours and cache the scored edges per
-`(date, hour)`.** A route request then becomes a graph search over cached
-weights — milliseconds. Otherwise you recompute a citywide polygon union per
-request.
+**Quantize departure time and cache the scored edges per `(date, hour,
+minute)`.** A route request then becomes a graph search over cached weights —
+milliseconds. Otherwise you recompute a citywide polygon union per request.
 
-The date belongs in that key, not just the hour. 13:00 in June and 13:00 in
+The date belongs in that key, not just the time. 13:00 in June and 13:00 in
 December are different suns — mean shade across the walk network is 0.033
-against 0.291 — so an hour-only cache serves one for the other the first time
+against 0.291 — so a time-only cache serves one for the other the first time
 the map rolls forward a day.
+
+**How coarsely to quantize is set by the sun, not the clock.** An hour is a fine
+step while the sun is high and much too coarse once it is low, because how far a
+shadow travels per minute is a function of altitude. Measured on 13 September
+across the 10,066-edge walk network:
+
+| from | step | mean shade | edges whose `shade_fraction` moved > 0.1 |
+|---|---|---|---|
+| 13:00 (41°) | +20 min | 0.335 | 3.6% |
+| | +60 min | 0.358 | **16.8%** |
+| 17:00 (18°) | +20 min | 0.659 | 24.2% |
+| | +60 min | 0.820 | **59.1%** |
+
+An hour at 17:00 redraws well over half the network and moves mean shade by
+0.22 — larger than the June/December gap the cache is keyed on the date for.
+Somebody leaving at 17:45 was being routed against 17:00's city.
+
+So `daylight_times` in `solar.py` cuts any hour whose sun is below
+`LOW_SUN_DEG = 25°` into thirds — `:00`, `:20`, `:40` — and leaves the rest
+hourly. That is the whole of it: 24 stamps on 13 September against 13 hourly
+ones, 29 in midsummer, and in December all 24, because Astana's winter sun never
+clears 25° at all. Uniform 20-minute steps would have cost 39 and 48 for a
+midday refinement worth 3.6% — well inside the error already in the height
+priors.
 
 Corollary: scope to Astana's bbox. Arbitrary origins would mean OSM downloads in
 the request path.
@@ -241,6 +264,7 @@ POST /api/route
   "destination": [lat, lon],
   "date":        "2026-09-12",
   "hour":        16,
+  "minute":      20,
   "alpha":       6.0
 }
 →
@@ -252,27 +276,35 @@ POST /api/route
 GET /api/health
 ```
 
-`date` is sent by the client, not read from the server's clock. It comes from
-the tile manifest, so the router weights streets by the same sun the map drew:
-if a nightly rebuild fails, both stay a day behind together instead of quietly
-disagreeing. It is bounded to within a year of today — every distinct date is a
+`date` is sent by the client, not read from the server's clock, and so are
+`hour` and `minute`. All three come from the tile manifest, so the router
+weights streets by the same sun the map drew: if a nightly rebuild fails, both
+stay a day behind together instead of quietly disagreeing. It is bounded to within a year of today — every distinct date is a
 fresh shadow field over the routing footprints, and an unbounded range is an
-unbounded amount of work a caller can ask for.
+unbounded amount of work a caller can ask for. `minute` is bounded for the same
+reason and more tightly — it must be one of `0`, `20`, `40`, since anything else
+is a scored graph built for a sun no tileset was ever drawn for.
 
 Routes reach MapLibre as GeoJSON. Shadows do not, and deliberately so: within a
-day the sun repeats, so an hour's shadow field never changes once it is built.
-`scripts/export_shadow_tiles.py` builds each daylight hour into its own vector
-tileset ahead of time, and the browser reads them the way it reads roads.
+day the sun repeats, so a stamp's shadow field never changes once it is built.
+`scripts/export_shadow_tiles.py` builds each one into its own vector tileset
+ahead of time, named `HHMM.pmtiles`, and the browser reads them the way it reads
+roads.
 
-How many tilesets exist is a property of the date, not a constant — 16 in June,
-13 in mid-September, 8 at the winter solstice. The script writes what it
-produced to `shadows/index.json`: the date, the hours, the layer name. The
-frontend builds its sources from that manifest, because a daylight window
-hardcoded on the other side is right for exactly one date, and asking for
-`05.pmtiles` in December is a 404.
+How many tilesets exist is a property of the date, not a constant — 29 in June,
+24 in mid-September, 24 at the winter solstice. Those are close together while
+the daylight behind them is not: June has 16 hours of sun and December 8. The
+split above is what evens them out, cutting December's few hours into thirds all
+day and leaving June's long high middle hourly. The script writes what it
+produced to `shadows/index.json`: the date, the times, the layer name. The
+frontend builds its sources from that manifest, because a daylight window and a
+step size hardcoded on the other side are right for exactly one date, and asking
+for `0500.pmtiles` in December is a 404.
 
-The map holds one source and one layer per hour, and the time slider only
-changes which layer is visible. Nothing is computed on demand, so shadows are
+The map holds one source and one layer per stamp, and the time slider only
+changes which layer is visible. The slider's stops come from the manifest too,
+so it moves in twenty-minute steps at dawn and dusk and hourly in between —
+finer exactly where the picture changes faster. Nothing is computed on demand, so shadows are
 already drawn wherever you pan and at every zoom, city-wide. Opening every
 tileset costs a few hundred KB, because pmtiles is read by byte range — only the
 tiles actually on screen are ever fetched.
@@ -295,7 +327,7 @@ backend/
     core/
       graph.py               OSM walk network load + cache
       buildings.py           footprints + height chain + provenance
-      solar.py               pysolar wrapper: (lat, lon, ts) → altitude, azimuth
+      solar.py               sun angles, and which stamps a date gets tiles for
       shadows.py             footprints + sun → unioned, indexed polygons
       trees.py               canopy polygons + the leaf-on season
       scoring.py             edge sub-segmentation + shade fraction
@@ -306,7 +338,7 @@ backend/
 frontend/src/
   api/client.ts              typed fetch; mirrors main.py and the tile manifest
   components/
-    MapView.tsx              map, shadow layers, route layers, the clock
+    MapView.tsx              map, shadow + building layers, routes, the clock
     RouteSummary.tsx
     controls/{TimeSlider,ShadeSlider}.tsx
 
@@ -330,7 +362,9 @@ Frontend:
 cd frontend && npm install && npm run dev
 ```
 
-Shadow tiles (needs `brew install tippecanoe`; about 12 s per daylight hour).
+Shadow tiles (needs `brew install tippecanoe`). About 40 s per stamp and
+roughly flat across the day, so a mid-September date is 24 of them and a
+quarter of an hour.
 Defaults to today in Astana, and deletes any tileset the new date has no sun
 for, so the directory always holds exactly one day:
 
@@ -437,9 +471,25 @@ Mean shade across the walk network at 13:00 on 13 September:
 | canopy as a wall | 0.431 |
 | canopy dappled (shipped) | **0.327** |
 
-The tiles carry the same split as a `kind` property per blob, so the map draws a
-crown at 0.7 of a wall's opacity. That is also why you can finally see the trees:
-before this, canopy and building shadow were the same flat colour.
+The tiles carry the same split as a `kind` property per blob, and the map reads
+it on two channels: hue for which kind of shade it is, opacity for how much.
+Canopy is green at 0.7 of a wall's opacity, so the picture still never overstates
+the shade the router weights by. Opacity alone was not enough. A crown at 0.21
+against a wall at 0.3, both in the same violet-grey, is a difference of nine
+parts in an alpha channel — trees read as buildings, and the split the tiles
+went to the trouble of carrying was invisible.
+
+**Draw the buildings after the shadows, not before.** `cast_shadow` unions a
+footprint with its translated copy, so every blob contains the building that
+threw it. Draw the field over the basemap and every building in the city is
+filled with shadow colour by its own shadow — not a palette problem, since a
+building and a shadow are then the same pixels, and no choice of colours
+separates them. It is also the wrong claim: this is a ground-plane model, and
+shade on a roof is not somewhere anybody walks. So the buildings layer is lifted
+out of the basemap and redrawn above the shadows, warm and lighter than the
+ground, because everything shaded here is cool and darker — which separates a
+building from a shadow at the zooms where a footprint is only a few pixels wide
+and its shape is no help.
 
 Two things to hold against all of it. **The model finds where canopy is, never
 how tall** — every polygon still leaves with the flat 8 m constant, tagged
@@ -449,9 +499,13 @@ how tall** — every polygon still leaves with the flat 8 m constant, tagged
 **Model limits:** flat terrain, no awnings or arcades. No DEM, so hills and
 their shadows are invisible.
 
-**The tiles have grown.** Canopy roughly tripled them, 59 MB to 151 MB a day.
-Still nothing next to a Pages site limit, but it changes the arithmetic on
-whatever ends up serving them.
+**The tiles have grown, twice.** Canopy roughly tripled them, 59 MB to 151 MB a
+day. Cutting the low-sun hours into thirds took mid-September from 13 tilesets
+to 24, and **144 MB to 269.5 MB**. Still nothing next to a Pages site limit, and
+the browser only byte-ranges what is on screen, but it changes the arithmetic on
+whatever ends up serving them — and it is why the split follows the sun instead
+of the clock. Uniform `:00/:20/:40` would have been 39 tilesets and about 430 MB
+for a midday refinement worth 3.6% of edges.
 
 ## Attribution
 
