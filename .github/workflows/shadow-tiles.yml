@@ -106,7 +106,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: shadow-tiles
-          path: frontend/public/shadows/
+          # The routing scores ride along: the run computes them from the same
+          # shadow field it cuts the tiles from, and uploading only half of
+          # what it built would leave the expensive half on the runner.
+          path: |
+            frontend/public/shadows/
+            data/cache/scored/
           # These are rebuilt nightly and nothing consumes them yet, so keeping
           # a fortnight of them would only be storage -- and a day is no longer
           # 59 MB. See the tile-size note in the README.

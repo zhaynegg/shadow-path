@@ -26,13 +26,17 @@ import time
 from pathlib import Path
 
 import geopandas as gpd
+import osmnx as ox
 import pandas as pd
 
-from backend.config import CACHE_DIR, LAT, LON, TZ, today
+from backend.config import CACHE_DIR, GRAPH_RADIUS, LAT, LON, TZ, today
+from backend.core import scores
 from backend.core.buildings import load_buildings
+from backend.core.graph import load_graph
+from backend.core.scoring import score_edges_layered
 from backend.core.shadows import SIMPLIFY_M, layered_field
 from backend.core.solar import daylight_times, sun_position
-from backend.core.trees import CANOPY_SOURCES, shading_geometry
+from backend.core.trees import CANOPY_OPACITY, CANOPY_SOURCES, shading_geometry
 
 # Every hour uses the same layer name, so one map style can read whichever
 # tileset is currently loaded without rewriting the layer.
@@ -72,10 +76,14 @@ def stem(when: dt.time) -> str:
     return f"{when.hour:02d}{when.minute:02d}"
 
 
-def build_time(
-    gdf: gpd.GeoDataFrame, date: dt.date, at: dt.time, out_dir: Path, work_dir: Path
-) -> Path | None:
-    """Write one timestamp's tileset. None when there is nothing to draw."""
+def shadow_layers(gdf: gpd.GeoDataFrame, date: dt.date, at: dt.time):
+    """One stamp's shadow, split into (solid, canopy). None when there is none.
+
+    Pulled out of the tile builder because it is the expensive half of this
+    script and both consumers want the same answer: the tiles draw it, and the
+    router scores the graph against it. Computing it twice would be half an
+    hour a night spent proving the two agree.
+    """
     when = dt.datetime.combine(date, at, tzinfo=TZ)
     altitude, azimuth = sun_position(LAT, LON, when)
     if altitude <= 0:
@@ -87,8 +95,12 @@ def build_time(
         gdf, altitude, azimuth, gdf["height_source"].isin(CANOPY_SOURCES))
     if opaque is None and dappled is None:
         return None
+    return opaque, dappled
 
-    parts = [blobs(field, gdf.crs, kind)
+
+def build_tiles(opaque, dappled, crs, at: dt.time, out_dir: Path, work_dir: Path) -> Path:
+    """Write one timestamp's tileset from an already-computed field."""
+    parts = [blobs(field, crs, kind)
              for field, kind in ((opaque, "solid"), (dappled, "canopy"))
              if field is not None]
     frame = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=4326)
@@ -149,9 +161,16 @@ def main() -> None:
     parser.add_argument("--cache-dir", type=Path, default=CACHE_DIR)
     parser.add_argument("--date", type=dt.date.fromisoformat, default=today(),
                         help="YYYY-MM-DD; defaults to today in Astana")
+    parser.add_argument("--no-scores", action="store_true",
+                        help="tiles only; skip the precomputed routing scores")
+    parser.add_argument("--scores-only", action="store_true",
+                        help="routing scores only; leave the tiles and manifest alone")
     args = parser.parse_args()
 
-    if shutil.which("tippecanoe") is None:
+    if args.no_scores and args.scores_only:
+        raise SystemExit("--no-scores and --scores-only ask for nothing at all")
+
+    if not args.scores_only and shutil.which("tippecanoe") is None:
         raise SystemExit("tippecanoe is not on PATH -- brew install tippecanoe")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -169,33 +188,67 @@ def main() -> None:
     wanted = daylight_times(LAT, LON, args.date, TZ)
     print(f"{len(wanted)} stamps, {wanted[0]:%H:%M}-{wanted[-1]:%H:%M}\n")
 
+    # The graph is loaded once, outside the loop: it is 50k nodes and every
+    # stamp scores the same edges against a different field.
+    edges = None
+    if not args.no_scores:
+        edges = ox.graph_to_gdfs(load_graph(args.cache_dir, GRAPH_RADIUS), nodes=False)
+        print(f"routing graph: {len(edges):,} edges within {GRAPH_RADIUS / 1000:.0f} km\n")
+
     written: dict[dt.time, Path] = {}
     with tempfile.TemporaryDirectory() as tmp:
         for at in wanted:
             start = time.time()
-            tiles = build_time(gdf, args.date, at, args.out_dir, Path(tmp))
-            if tiles is None:
+            layers = shadow_layers(gdf, args.date, at)
+            if layers is None:
                 print(f"  {at:%H:%M}  sun down, skipped")
                 continue
-            size = tiles.stat().st_size / 1e6
-            written[at] = tiles
-            print(f"  {at:%H:%M}  {tiles.name}  {size:5.1f} MB  {time.time() - start:5.1f}s")
+            opaque, dappled = layers
+            note = ""
+
+            if not args.scores_only:
+                tiles = build_tiles(opaque, dappled, gdf.crs, at, args.out_dir, Path(tmp))
+                written[at] = tiles
+                note += f"  {tiles.name}  {tiles.stat().st_size / 1e6:5.1f} MB"
+
+            # The same field the tiles were cut from, measured against the
+            # graph. This is the whole point of the exercise: done here it is
+            # once a night, done in the API it is once per stamp per restart.
+            if edges is not None:
+                scored = score_edges_layered(edges, opaque, dappled, CANOPY_OPACITY)
+                path = scores.save(scored, args.cache_dir, GRAPH_RADIUS, args.date, at)
+                note += f"  +{path.stat().st_size / 1e6:4.1f} MB scores"
+
+            print(f"  {at:%H:%M}{note}  {time.time() - start:5.1f}s")
 
     # A rebuild can leave behind stamps the new date has no sun for, or, after
     # a change to daylight_times, ones it no longer cuts the hour finely enough
     # to want. They would ship as dead weight and, worse, still answer when the
-    # map asked.
-    for stale in sorted(set(args.out_dir.glob("*.pmtiles")) - set(written.values())):
-        stale.unlink()
-        print(f"  {stale.name}  stale, removed")
+    # map asked. Guarded, because a --scores-only run cut no tiles and would
+    # otherwise read its own empty `written` as "every tileset is stale".
+    if not args.scores_only:
+        for stale in sorted(set(args.out_dir.glob("*.pmtiles")) - set(written.values())):
+            stale.unlink()
+            print(f"  {stale.name}  stale, removed")
+
+    # Scores for a date nobody will ask about again. The map sends the date it
+    # is showing, and that comes from the manifest written just below.
+    if edges is not None:
+        for old in scores.prune(args.cache_dir, GRAPH_RADIUS, args.date):
+            print(f"  {old.name}  stale scores, removed")
 
     times = sorted(written)
-    write_manifest(args.out_dir, args.date, times)
-
-    total = sum(p.stat().st_size for p in args.out_dir.glob("*.pmtiles")) / 1e6
-    span = f"{times[0]:%H:%M}-{times[-1]:%H:%M}" if times else "none"
-    print(f"\n{len(times)} tilesets, {span}, {total:.1f} MB total, in {args.out_dir}")
-    print(f"{MANIFEST} written for {args.date}")
+    if not args.scores_only:
+        write_manifest(args.out_dir, args.date, times)
+        total = sum(p.stat().st_size for p in args.out_dir.glob("*.pmtiles")) / 1e6
+        span = f"{times[0]:%H:%M}-{times[-1]:%H:%M}" if times else "none"
+        print(f"\n{len(times)} tilesets, {span}, {total:.1f} MB total, in {args.out_dir}")
+    if edges is not None:
+        scored_dir = scores.scores_dir(args.cache_dir, GRAPH_RADIUS, args.date)
+        scored_mb = sum(f.stat().st_size for f in scored_dir.glob("*.parquet")) / 1e6
+        print(f"routing scores: {scored_mb:.1f} MB in {scored_dir}")
+    if not args.scores_only:
+        print(f"{MANIFEST} written for {args.date}")
 
 
 if __name__ == "__main__":

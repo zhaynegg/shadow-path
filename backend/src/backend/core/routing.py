@@ -4,7 +4,7 @@ import osmnx as ox
 import shapely
 from shapely.geometry import Point
 
-from backend.config import CRS
+from backend.config import CRS, GRAPH_RADIUS
 
 
 # A click a little off a pavement is normal; a click across town is not. Beyond
@@ -25,9 +25,13 @@ def nearest_node(graph, lat: float, lon: float) -> int:
     distances = nodes.distance(point)
     node = distances.idxmin()
     if distances[node] > MAX_SNAP_M:
+        # Spelled from the constant rather than described in prose: this
+        # message said "only covers the city centre" for as long as the graph
+        # was a 1.7 km disc, and went on saying it after the graph was not.
         raise ValueError(
             f"That point is {distances[node] / 1000:.1f} km from the nearest mapped "
-            "street. The walking network only covers the city centre."
+            f"street. The walking network reaches {GRAPH_RADIUS / 1000:.0f} km from "
+            "the centre of Astana."
         )
     return node
 

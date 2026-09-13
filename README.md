@@ -412,6 +412,7 @@ backend/
     survey_heights.py        count storeys off imagery, one building at a time
     export_fixtures.py       write shadow GeoJSON fixtures for the frontend
     export_shadow_tiles.py   a .pmtiles layer per daylight hour, + index.json
+                             and the routing scores cut from the same field
     fetch_trees.py           cache OSM tree rows and points
     detect_trees.py          find canopy in Sentinel-2 (needs --group ml)
   src/backend/
@@ -424,9 +425,12 @@ backend/
       shadows.py             footprints + sun → unioned, indexed polygons
       trees.py               canopy polygons + the leaf-on season
       scoring.py             edge sub-segmentation + shade fraction
+      scores.py              last night's shade per edge, so routing has
+                             no geometry left to do at request time
       routing.py             weighted A*, baseline route, stats
   tests/
-    test_scoring.py, test_routing.py, test_api.py, test_buildings.py
+    test_scoring.py, test_routing.py, test_api.py, test_buildings.py,
+    test_scores.py
 
 frontend/src/
   api/client.ts              typed fetch; mirrors main.py and the tile manifest

@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from backend.config import CACHE_DIR, CRS, GRAPH_RADIUS, LAT, LON, TZ, today
+from backend.core import scores
 from backend.core.buildings import load_buildings
 from backend.core.graph import load_graph
 from backend.core.routing import MAX_ALPHA, plan
@@ -110,9 +111,20 @@ def scored_edges(date: dt.date, hour: int, minute: int):
     longest two in the year and a rollover at midnight cannot evict the day
     still being asked for.
     """
+    edges = ox.graph_to_gdfs(graph(), nodes=False)
+
+    # The nightly tile run already built this exact field and scored the graph
+    # against it. Reading that back is the difference between half a minute and
+    # a parquet read, and it is what makes a city-wide graph usable at all.
+    # Everything below is the fallback for a checkout that has not run it.
+    precomputed = scores.load(CACHE_DIR, GRAPH_RADIUS, date, dt.time(hour, minute), edges.index)
+    if precomputed is not None:
+        ready = edges.copy()
+        ready["shade_fraction"] = precomputed
+        return ready
+
     when = dt.datetime.combine(date, dt.time(hour, minute), tzinfo=TZ)
     altitude, azimuth = sun_position(LAT, LON, when)
-    edges = ox.graph_to_gdfs(graph(), nodes=False)
     if altitude <= 0:
         return score_edges(edges, None)
 

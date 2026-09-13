@@ -182,6 +182,11 @@ def test_scored_edges_reuses_the_same_date_and_time(monkeypatch):
     monkeypatch.setattr(main, "sun_position", fake_sun)
     monkeypatch.setattr(main, "graph", lambda: None)
     monkeypatch.setattr(main.ox, "graph_to_gdfs", lambda graph, nodes: edges)
+    # This test counts sun_position calls, so it is about the path that
+    # computes the field. Whether a developer has run export_shadow_tiles.py
+    # must not decide which branch runs -- without this, the assertion below
+    # passes on a cold checkout and fails on a warm one.
+    monkeypatch.setattr(main.scores, "load", lambda *args, **kwargs: None)
     main.scored_edges.cache_clear()
 
     main.scored_edges(today(), 13, 0)
@@ -211,6 +216,11 @@ def test_scored_edges_keys_on_the_minute_too(monkeypatch):
     monkeypatch.setattr(main, "sun_position", fake_sun)
     monkeypatch.setattr(main, "graph", lambda: None)
     monkeypatch.setattr(main.ox, "graph_to_gdfs", lambda graph, nodes: edges)
+    # This test counts sun_position calls, so it is about the path that
+    # computes the field. Whether a developer has run export_shadow_tiles.py
+    # must not decide which branch runs -- without this, the assertion below
+    # passes on a cold checkout and fails on a warm one.
+    monkeypatch.setattr(main.scores, "load", lambda *args, **kwargs: None)
     main.scored_edges.cache_clear()
 
     for minute in (0, 20, 40):
