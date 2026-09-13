@@ -200,24 +200,73 @@ Note also that a constant-3 fallback is the *worst* option here: Astana's
 untagged population is mostly single-storey, so 3 inflates it. Constant 1 beats
 it outright.
 
+### Ask the neighbours instead
+
+The prior asks a global question — how tall is a `building=apartments` of this
+size, anywhere in Astana? The city answers a local one better. Astana went up as
+Soviet-planned microdistricts, in uniform series, so a nine-storey panel block
+is usually surrounded by other nine-storey panel blocks — and that is already in
+the footprints, with nothing to download.
+
+`scripts/height_neighbours.py` scores it under **spatial** cross-validation:
+folds are 1 km blocks of city, not random rows, and neighbours are drawn only
+from the training fold. Both matter. Split at random and halves of the same
+terrace land on either side, so the model is scored on buildings it has
+effectively already seen.
+
+```
+                       MAE   within 1   MAE tall   within 1 tall
+prior                 0.98      83.9%       5.21           18.2%
+neighbour             1.27      77.3%       5.02           24.8%
+neighbour by size     0.95      83.2%       4.23           32.2%
+prior + by size       0.90      81.3%       4.43           16.9%
+```
+
+Read the *tall* columns. **Neighbour-by-size cuts the error on the buildings
+that matter by 19% and nearly doubles how often it lands within a storey**, and
+it costs nothing but a KD-tree over footprints you already have.
+
+The size restriction is the whole trick. Unrestricted, the nearest buildings to
+a panel block are garages, kiosks and transformer huts, and a median over that
+mix falls back towards low-rise — the same failure the global prior has, just
+measured locally. `neighbour` on its own is barely better than `prior`.
+
+Note that `prior + by size` wins the overall column and loses the tall one. The
+overall column is the trap again, so it is not what ships.
+
+**This is what ships**, above the global prior in the chain. On Astana's data it
+answers all 29,860 untagged buildings, which means the prior is now never
+reached — it stays as the rung beneath in case that ever stops being true. Three
+quarters of those buildings get the same answer the prior gave; the other
+quarter is where it earns its place, and 1% of them move by 11 storeys or more.
+Citywide shadow area at 17:00 on 13 September goes from 64.7 km² to **70.5 km²,
++8.9%** — this is not a cosmetic change.
+
+It is still a guess. Every one of those buildings carries
+`height_source="neighbour"`, and a surveyed count still outranks it — which also
+means the survey compounds: each building counted through
+`scripts/survey_heights.py` improves not only itself but every untagged building
+standing near it.
+
 So: **two regimes, explicitly.**
 
-- **Small / simple buildings** — the prior is fine and near-deterministic.
+- **Small / simple buildings** — the estimate is fine and near-deterministic.
 - **Shadow-relevant** (type in the big list, or footprint >500 m²; 10,550
   buildings, 21.1% of all, 53.6% tagged) — use the tagged value, or a manual
-  override, or render as low confidence. Never let the prior silently invent a
-  12-storey tower.
+  override, or render as low confidence. Never let an estimate silently invent
+  a 12-storey tower.
 
 Every building carries a provenance column so the distinction survives into the
 UI:
 
 ```
 height_m: float
-height_source: "osm_height" | "osm_levels" | "manual" | "type_prior"
+height_source: "tag" | "levels" | "override" | "neighbour" | "prior" | "fallback"
 ```
 
-With a third of shadow-mass resting on priors, greying out low-confidence
-shadows is honest rather than decorative.
+Only the first three are measurements. `neighbour` and `prior` are guesses, and
+`fallback` is a shrug. With a third of shadow-mass resting on the guesses,
+greying out low-confidence shadows is honest rather than decorative.
 
 **A tag is not automatically a measurement.** Four Astana buildings carry
 `height=0` and a fifth `building:levels=0`, none with another tag to fall back
@@ -445,9 +494,11 @@ FastAPI's `StaticFiles` or a CDN.
 
 ## Known gaps
 
-**Dependencies still to add:** `pydantic-settings`. `pytest`, `ruff`, `scipy`
-and `httpx` are in the dev group, `rasterio` and `scikit-learn` in an `ml`
-group the API never installs, and `pyarrow` is in the main one.
+**Dependencies still to add:** `pydantic-settings`. `pytest`, `ruff` and
+`httpx` are in the dev group, `rasterio` and `scikit-learn` in an `ml` group the
+API never installs, and `pyarrow` and `scipy` are in the main one — `scipy` for
+the KD-tree behind the neighbour height estimate, which both the API and the
+tile export reach through `load_buildings`.
 The timezone is hardcoded to UTC+5 in `config.py` — the documented shortcut
 while this is single-city, and `timezonefinder` is what replaces it.
 

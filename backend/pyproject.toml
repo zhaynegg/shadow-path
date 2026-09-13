@@ -16,6 +16,9 @@ dependencies = [
     "pyarrow>=25.0.1",
     "pyproj>=3.7.2",
     "pysolar>=0.13",
+    # cKDTree, for the neighbour height estimate in core/buildings.py. Runtime,
+    # not analysis: the API and the tile export both load buildings.
+    "scipy>=1.18.1",
     "shapely>=2.1.2",
     "uvicorn[standard]>=0.52.4",
 ]
@@ -32,7 +35,6 @@ dev = [
     "httpx2>=2.12.0",
     "pytest>=9.1.1",
     "ruff>=0.16.5",
-    "scipy>=1.18.1",
 ]
 ml = [
     "rasterio>=1.5.1",

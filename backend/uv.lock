@@ -75,6 +75,7 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pyproj" },
     { name = "pysolar" },
+    { name = "scipy" },
     { name = "shapely" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -84,7 +85,6 @@ dev = [
     { name = "httpx2" },
     { name = "pytest" },
     { name = "ruff" },
-    { name = "scipy" },
 ]
 ml = [
     { name = "rasterio" },
@@ -101,6 +101,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=25.0.1" },
     { name = "pyproj", specifier = ">=3.7.2" },
     { name = "pysolar", specifier = ">=0.13" },
+    { name = "scipy", specifier = ">=1.18.1" },
     { name = "shapely", specifier = ">=2.1.2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.4" },
 ]
@@ -110,7 +111,6 @@ dev = [
     { name = "httpx2", specifier = ">=2.12.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.16.5" },
-    { name = "scipy", specifier = ">=1.18.1" },
 ]
 ml = [
     { name = "rasterio", specifier = ">=1.5.1" },

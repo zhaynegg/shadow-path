@@ -8,6 +8,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+from scipy.spatial import cKDTree
 from shapely.geometry import Point
 
 from backend.config import HEIGHT_OVERRIDES, LAT, LON
@@ -24,6 +25,11 @@ SIZE_LABELS = ["s", "m", "l", "xl"]
 # believing. At 10 the prior still reaches 97% of the untagged buildings, and
 # the 66 groups it drops were resting on a handful of examples each.
 MIN_GROUP = 10
+
+# How many tagged neighbours the local estimate takes the median of. Measured
+# at 8 in scripts/height_neighbours.py: small enough to stay inside one series
+# of blocks, large enough that one mistagged building cannot swing the answer.
+NEIGHBOURS = 8
 
 
 def parse_numeric(value: object) -> float:
@@ -71,6 +77,74 @@ def load_overrides(path: Path) -> dict[tuple[str, int], float]:
 def size_bin(gdf: gpd.GeoDataFrame) -> pd.Series:
     """Footprint area as a coarse size class. Needs a projected CRS (metres)."""
     return pd.cut(gdf.geometry.area, SIZE_BINS, labels=SIZE_LABELS)
+
+
+def neighbour_levels(
+    gdf: gpd.GeoDataFrame, known: pd.Series, k: int = NEIGHBOURS
+) -> pd.Series:
+    """Storeys read off the buildings standing around this one.
+
+    Astana went up as Soviet-planned microdistricts, in uniform series, so a
+    nine-storey panel block is usually surrounded by other nine-storey panel
+    blocks. That is already in the footprints, with nothing to download.
+
+    Restricted to neighbours in the same size class, which is the whole trick.
+    The k nearest buildings of any kind include garages, kiosks and transformer
+    huts, and a median over that mix falls back towards low-rise -- the failure
+    the global prior already has, measured locally instead of globally. Under
+    spatial cross-validation in scripts/height_neighbours.py:
+
+        predictor            MAE tall   within 1 tall
+        prior                    5.21           18.2%
+        neighbour                5.02           24.8%
+        neighbour by size        4.23           32.2%
+
+    The tall column is the one that matters -- those are the buildings casting
+    every shadow worth routing around, and it is where the global prior is at
+    its worst.
+
+    Still a guess, and one with no distance limit: a building whose size class
+    is rare nearby takes the median of whatever is closest, however far that is.
+    `height_source` says `neighbour` so you can always ask how much of a map
+    rests on it.
+    """
+    answer = pd.Series(np.nan, index=gdf.index)
+    if not known.notna().any():
+        return answer
+
+    centres = gdf.geometry.centroid
+    points = np.c_[centres.x, centres.y]
+    levels = known.to_numpy(float)
+    sizes = size_bin(gdf)
+    have, want = known.notna().to_numpy(), known.isna().to_numpy()
+
+    def median_of_nearest(source: np.ndarray, target: np.ndarray):
+        """Median storeys of the k nearest `source` rows, for each `target` row."""
+        if not source.any() or not target.any():
+            return None
+        tree = cKDTree(points[source])
+        _, index = tree.query(points[target], k=min(k, int(source.sum())))
+        # cKDTree drops the k axis when k == 1, which a size class with a single
+        # tagged building in the whole city would otherwise turn into one median
+        # for every row at once.
+        if index.ndim == 1:
+            index = index[:, None]
+        return np.median(levels[source][index], axis=1)
+
+    for group in sizes.dropna().unique():
+        in_group = (sizes == group).to_numpy()
+        found = median_of_nearest(have & in_group, want & in_group)
+        if found is not None:
+            answer.iloc[want & in_group] = found
+
+    # A size class with nothing tagged anywhere leaves a hole. Fill it from the
+    # neighbours of any size rather than dropping straight to the global prior:
+    # a rough local answer still beats a city-wide one.
+    gaps = (want & answer.isna().to_numpy())
+    found = median_of_nearest(have, gaps)
+    if found is not None:
+        answer.iloc[gaps] = found
+    return answer
 
 
 def level_priors(
@@ -128,6 +202,20 @@ def load_buildings(
     # for every caller.
     by_group, by_tag = level_priors(gdf)
 
+    # One dict lookup per row. A merge would read more naturally and could
+    # silently duplicate rows when the override file repeats a key -- inflating
+    # the building count and double-counting shadows, with no error anywhere.
+    overrides = load_overrides(overrides_path)
+    keys = pd.Series(list(zip(gdf["element"], gdf["id"])), index=gdf.index)
+    surveyed = keys.map(overrides) if overrides else pd.Series(np.nan, index=gdf.index)
+
+    # What the local estimate learns from: everything whose storeys are already
+    # known, best source first. Surveyed counts are in there deliberately --
+    # every building filled in through scripts/survey_heights.py improves not
+    # only itself but every untagged building standing near it.
+    known = surveyed.fillna(gdf["building:levels"].map(parse_numeric))
+    nearby = neighbour_levels(gdf, known)
+
     if radius is not None:
         # The parquet is in a projected CRS (metres), so reproject the centre to
         # match before measuring distance -- degrees and metres do not compare.
@@ -135,13 +223,8 @@ def load_buildings(
         gdf = gdf[gdf.geometry.distance(centre) <= radius]
 
     gdf = gdf.copy()
-
-    # One dict lookup per row. A merge would read more naturally and could
-    # silently duplicate rows when the override file repeats a key -- inflating
-    # the building count and double-counting shadows, with no error anywhere.
-    overrides = load_overrides(overrides_path)
-    keys = pd.Series(list(zip(gdf["element"], gdf["id"])), index=gdf.index)
-    surveyed = keys.map(overrides) if overrides else pd.Series(np.nan, index=gdf.index)
+    surveyed = surveyed.loc[gdf.index]
+    nearby = nearby.loc[gdf.index]
 
     # Best source first. Overrides outrank even a `height` tag: surveying a
     # building by hand is something you only do to correct what OSM says.
@@ -153,6 +236,9 @@ def load_buildings(
         "override": surveyed * LEVEL_HEIGHT,
         "tag": gdf["height"].map(parse_numeric),
         "levels": gdf["building:levels"].map(parse_numeric) * LEVEL_HEIGHT,
+        # Above the global prior because it beats it where it counts: MAE 4.23
+        # against 5.21 storeys on buildings of five floors or more.
+        "neighbour": nearby * LEVEL_HEIGHT,
         "prior": prior * LEVEL_HEIGHT,
     }
 
