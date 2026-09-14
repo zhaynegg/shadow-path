@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import type { DayPlan, Departure } from '../api/client'
 import { CHART, area, bands, gain, heightOf, polyline, share, spread, verdict } from './departures'
+import { minutes } from './format'
+import { clockAfter } from './stamps'
 
 // [time, route shade, direct shade] -- the three numbers a stamp comes back as,
 // with the distance left out because nothing here reads it.
 const day = (rows: [string, number, number][]): DayPlan => ({
     baseline_distance_m: 3831,
+    baseline_duration_s: 3831 / 1.35,
     departures: rows.map(([time, shade, baseline]): Departure => ({
         time,
         distance_m: 4200,
+        duration_s: 4200 / 1.35,
         shade_fraction: shade,
         baseline_shade_fraction: baseline,
     })),
@@ -149,5 +153,35 @@ describe('polyline and area', () => {
         expect(area(xs, values).split(' ')).toHaveLength(7)
         const right = (CHART.width - CHART.pad).toFixed(1)
         expect(area(xs, values).endsWith(`${right},${CHART.height}`)).toBe(true)
+    })
+})
+
+describe('minutes', () => {
+    it('rounds to the minute, because the pace it comes from is one constant', () => {
+        expect(minutes(222)).toBe('4 min')
+        expect(minutes(1320)).toBe('22 min')
+    })
+
+    it('breaks into hours for the far edge of the graph', () => {
+        // The walk network reaches 15 km from the centre, which is a three-hour
+        // walk end to end. "187 min" is not a number anybody reads.
+        expect(minutes(60 * 60)).toBe('1 h')
+        expect(minutes(82 * 60)).toBe('1 h 22')
+        // Padded, so the minutes past the hour cannot be read as a count.
+        expect(minutes(65 * 60)).toBe('1 h 05')
+    })
+})
+
+describe('clockAfter', () => {
+    it('adds the walk to the departure', () => {
+        expect(clockAfter('10:00', 22 * 60)).toBe('10:22')
+        expect(clockAfter('09:45', 30 * 60)).toBe('10:15')
+    })
+
+    it('wraps at midnight rather than running past it', () => {
+        // A late walk that finishes at 00:10 finishes at 00:10. "24:10" is not
+        // a time, and neither is "23:70".
+        expect(clockAfter('23:50', 20 * 60)).toBe('00:10')
+        expect(clockAfter('23:00', 60 * 60)).toBe('00:00')
     })
 })

@@ -7,3 +7,18 @@ export const percent = (fraction: number) => `${Math.round(fraction * 100)}%`
 
 export const metres = (m: number) =>
     (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`)
+
+// Minutes, because that is the unit somebody deciding whether to walk thinks
+// in. Rounded to the minute: the pace it comes from is one constant for every
+// walker in the city, so a second of precision would be precision about
+// nothing. Over an hour it breaks into hours -- the graph reaches 15 km out,
+// which is a three-hour walk from the centre at the far edge.
+export const minutes = (seconds: number) => {
+    const total = Math.round(seconds / 60)
+    if (total < 60) return `${total} min`
+
+    const rest = total % 60
+    return rest === 0
+        ? `${total / 60} h`
+        : `${Math.floor(total / 60)} h ${String(rest).padStart(2, '0')}`
+}

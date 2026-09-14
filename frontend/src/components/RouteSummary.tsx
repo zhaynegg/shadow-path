@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { RoutePlan } from '../api/client'
-import { metres, percent } from '../lib/format'
+import { metres, minutes, percent } from '../lib/format'
+import { clockAfter } from '../lib/stamps'
 
 type RouteSummaryProp = {
     plan: RoutePlan | null,
@@ -10,6 +11,9 @@ type RouteSummaryProp = {
     // Signed, so this panel is the one place that knows whether the walk being
     // sold is the shady one or the sunny one. Everything below reads off it.
     alpha: number,
+    // The stamp the walk was planned for, which is also when the walker is
+    // assumed to set off -- so it is what the arrival clock counts from.
+    time: string,
     // The departure chart, which only makes sense once there is a walk to
     // chart. Passed in rather than built here so this card stays what it
     // has always been -- two routes and the difference between them -- and
@@ -38,7 +42,13 @@ function Row({ label, leg, seekingSun, mark }: RowProp) {
                 <span className={mark} />
                 {label}
             </span>
-            <span className="stat-dist">{metres(leg.distance_m)}</span>
+            <span className="stat-dist">
+                {/* Minutes first. "1.65 km" is a number a reader has to
+                    convert before it means anything; the conversion is the
+                    same one every time, so the panel does it for them. */}
+                {minutes(leg.duration_s)}
+                <span className="stat-far">{metres(leg.distance_m)}</span>
+            </span>
             <span className="stat-bar">
                 {/* Both bars are filled in the colour of the thing being
                     measured and drawn to the same scale, so the gap between
@@ -57,7 +67,7 @@ function Row({ label, leg, seekingSun, mark }: RowProp) {
     )
 }
 
-function RouteSummary({ plan, loading, error, pointCount, alpha, children }: RouteSummaryProp) {
+function RouteSummary({ plan, loading, error, pointCount, alpha, time, children }: RouteSummaryProp) {
     const seekingSun = alpha < 0
     const wanted = seekingSun ? 'sun' : 'shade'
     const found = seekingSun ? 'sunlit' : 'shaded'
@@ -114,6 +124,13 @@ function RouteSummary({ plan, loading, error, pointCount, alpha, children }: Rou
                                 <strong>{percent(gained)}</strong> more of the walk in {wanted}.
                             </>
                         )}
+                </div>
+                {/* The whole point of the minutes above, said as a clock:
+                    the map is already showing one moment of one day, and this
+                    is the other end of the walk that starts in it. */}
+                <div className="arrival">
+                    Set off at <strong>{time}</strong> and you are there by{' '}
+                    <strong>{clockAfter(time, plan.route.duration_s)}</strong>.
                 </div>
                 {children}
             </>

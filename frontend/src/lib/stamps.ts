@@ -64,3 +64,15 @@ export const nearestStamp = (minutes: number, times: string[]) =>
         ? times.reduce((best, time) =>
             Math.abs(toMinutes(time) - minutes) < Math.abs(toMinutes(best) - minutes) ? time : best)
         : WHOLE_HOURS[12]
+
+// What the clock says after a walk of this long. Wraps at midnight rather than
+// running past it: a late walk that finishes at 00:10 finishes at 00:10, and
+// "24:10" is not a time anybody reads.
+//
+// The date does not come with it, deliberately. Everything on this map belongs
+// to one day -- the tiles, the scores, the stamps -- and a walk that crosses
+// into the next one is a walk this app has no shadows for either side of.
+export const clockAfter = (time: string, seconds: number) => {
+    const at = (toMinutes(time) + Math.round(seconds / 60)) % 1440
+    return `${String(Math.floor(at / 60)).padStart(2, '0')}:${String(at % 60).padStart(2, '0')}`
+}

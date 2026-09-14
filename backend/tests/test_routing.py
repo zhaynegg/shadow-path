@@ -10,6 +10,7 @@ from shapely.geometry import Point
 from backend.config import CRS, LAT, LON, today
 from backend.core.routing import (
     MAX_ALPHA,
+    WALK_SPEED_MS,
     departures,
     edge_weights,
     graph_nodes,
@@ -283,3 +284,55 @@ def test_snap_is_the_same_answer_as_nearest_node():
     graph, _, (origin, _) = three_ways()
 
     assert snap(graph_nodes(graph), *origin) == nearest_node(graph, *origin)
+
+
+def test_a_leg_carries_how_long_it_takes_to_walk_it():
+    """Derived from the distance, in the one place that measures a distance.
+
+    The browser could divide by a constant just as well, and then there would
+    be two constants -- one of them in a file nobody edits when the other one
+    moves. Every leg the API returns comes through `measure`, so both endpoints
+    quote the same pace or neither does.
+    """
+    graph, scored, (origin, destination) = three_ways()
+
+    result = route(graph, scored, origin, destination, 0.0)
+
+    assert result["duration_s"] == pytest.approx(DIRECT_M / WALK_SPEED_MS)
+    # 300 m at a walk is about three and a half minutes.
+    assert result["duration_s"] == pytest.approx(222.2, abs=0.5)
+
+
+def test_a_detour_for_shade_costs_minutes_as_well_as_metres():
+    """What the number is for. "10% longer" is a ratio a reader has to convert
+    before it means anything; "four minutes" is the thing they are deciding
+    about.
+    """
+    graph, scored, (origin, destination) = three_ways()
+
+    shady = route(graph, scored, origin, destination, 3.0)
+    direct = route(graph, scored, origin, destination, 0.0)
+
+    assert shady["duration_s"] > direct["duration_s"]
+    # The same ratio as the distances, because the pace is one number: the
+    # flanks are about 361 m against the direct route's 300.
+    assert shady["duration_s"] / direct["duration_s"] == pytest.approx(
+        shady["distance_m"] / direct["distance_m"])
+
+
+def test_the_day_scan_times_every_departure_and_the_direct_route_once():
+    """The walk is not the same length at every hour -- the detour the shade is
+    worth changes with the sun -- so the minutes move with it. The direct route
+    is one path all day, so it is timed once beside the rows rather than in
+    each of them.
+    """
+    graph, (origin, destination), day = a_day()
+
+    scan = departures(graph, day, origin, destination, 3.0)
+    rows = scan["departures"]
+
+    assert scan["baseline_duration_s"] == pytest.approx(DIRECT_M / WALK_SPEED_MS)
+    for row in rows:
+        assert row["duration_s"] == pytest.approx(row["distance_m"] / WALK_SPEED_MS)
+    # 08:00 detours onto the flank; noon and dusk take the short way.
+    assert rows[0]["duration_s"] > rows[1]["duration_s"]

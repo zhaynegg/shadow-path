@@ -1,6 +1,6 @@
 import type { DayPlan } from '../api/client'
 import { CHART, area, bands, heightOf, polyline, share, spread, verdict } from '../lib/departures'
-import { percent } from '../lib/format'
+import { minutes, percent } from '../lib/format'
 import { toMinutes } from '../lib/stamps'
 
 type DeparturePlannerProp = {
@@ -60,7 +60,8 @@ function DeparturePlanner({ day, loading, error, alpha, time, onScan, onPick }: 
     const now = rows.findIndex(row => row.time === time)
 
     const reading = (index: number) =>
-        `${rows[index].time} — ${percent(routeShare[index])} ${wanted}`
+        `${rows[index].time} — ${percent(routeShare[index])} ${wanted}, `
+        + `${minutes(rows[index].duration_s)}`
 
     return (
         <div className="depart">

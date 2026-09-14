@@ -44,6 +44,10 @@ export type LineGeometry = {
 
 export type Leg = {
     distance_m: number
+    // How long the walk takes at the one pace the backend assumes, in seconds.
+    // Sent rather than divided out here so the assumption lives in one file --
+    // see WALK_SPEED_MS in core/routing.py.
+    duration_s: number
     shade_fraction: number
     geometry: LineGeometry
 }
@@ -115,6 +119,9 @@ export type Departure = {
     // takes them from the same daylight_times that cut the tiles.
     time: string
     distance_m: number
+    // Not the same at every hour: the detour the shade is worth changes with
+    // the sun, and across a September day that is minutes of difference.
+    duration_s: number
     shade_fraction: number
     // The same hour's shade on the plain shortest path. The comparison is the
     // product here as much as it is on a single route: a shade curve alone
@@ -129,6 +136,7 @@ export type DayPlan = {
     // at every hour -- at alpha 0 the weight is the edge's own length, and a
     // length does not depend on where the sun is.
     baseline_distance_m: number
+    baseline_duration_s: number
     departures: Departure[]
 }
 

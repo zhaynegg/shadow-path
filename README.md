@@ -362,8 +362,10 @@ POST /api/route
 }
 →
 {
-  "route":    { "distance_m": 2550, "shade_fraction": 0.37, "geometry": <LineString> },
-  "baseline": { "distance_m": 1990, "shade_fraction": 0.00, "geometry": <LineString> }
+  "route":    { "distance_m": 2550, "duration_s": 1889,
+                "shade_fraction": 0.37, "geometry": <LineString> },
+  "baseline": { "distance_m": 1990, "duration_s": 1474,
+                "shade_fraction": 0.00, "geometry": <LineString> }
 }
 
 GET /api/health
@@ -380,8 +382,9 @@ POST /api/day          the same walk at every stamp of one day
 →
 {
   "baseline_distance_m": 3831,
+  "baseline_duration_s": 2838,
   "departures": [
-    { "time": "06:00", "distance_m": 3961,
+    { "time": "06:00", "distance_m": 3961, "duration_s": 2934,
       "shade_fraction": 0.97, "baseline_shade_fraction": 0.94 },
     ...one row per daylight stamp, ascending
   ]
@@ -454,6 +457,34 @@ finer exactly where the picture changes faster. Nothing is computed on demand, s
 already drawn wherever you pan and at every zoom, city-wide. Opening every
 tileset costs a few hundred KB, because pmtiles is read by byte range — only the
 tiles actually on screen are ever fetched.
+
+### How long it takes
+
+Every leg carries `duration_s` beside its `distance_m`, because "10% longer" is
+a ratio a reader has to convert before it means anything and "three minutes" is
+the thing they are actually deciding about. The panel leads with the minutes and
+keeps the distance behind them, and turns the departure stamp into an arrival
+clock: *set off at 10:00 and you are there by 10:20.*
+
+It is `distance / WALK_SPEED_MS`, computed in `measure()` — the one function
+every leg on both endpoints passes through, so the two can never quote different
+paces. 1.35 m/s is 4.9 km/h, the ordinary adult pace on the flat, and Astana is
+built on steppe so there is no slope model to want.
+
+One number for everybody, and it is the optimistic one. Four months of ice, the
+heat this app exists because of, a pram, a crossing, or being 70 all cost more
+than it admits. Read the minutes as the length of the walk rather than as a
+promise about the clock.
+
+Two things it does **not** model, both worth knowing before trusting a long one:
+
+- **The sun moves while you walk.** A route is planned against one stamp, and a
+  45-minute walk leaving at 17:40 arrives at 18:25, by which time the shade it
+  was routed through has gone. The scan is the honest tool for a walk that long
+  — it shows what each departure is worth — but neither endpoint re-plans
+  mid-walk.
+- **Arrival is a clock, not a date.** It wraps at midnight, because everything on
+  this map belongs to one day.
 
 ## Layout
 

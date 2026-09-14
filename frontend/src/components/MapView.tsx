@@ -625,7 +625,7 @@ function MapView() {
             </div>
 
             <RouteSummary plan={plan} loading={loading} error={error}
-                pointCount={points.length} alpha={alpha}>
+                pointCount={points.length} alpha={alpha} time={time}>
                 <DeparturePlanner
                     day={dayAnswered?.plan ?? null}
                     loading={scanning}

@@ -18,6 +18,16 @@ MAX_SNAP_M = 300.0
 # still has something to reject, nan and inf included.
 MAX_ALPHA = 12.0
 
+# Metres a second on the flat, which Astana is -- it is built on steppe, so
+# nothing here needs a slope model. 1.35 m/s is 4.9 km/h, the ordinary adult
+# pace every routing engine defaults to within a rounding error.
+#
+# One number for everybody, and it is the optimistic one. Ice underfoot for four
+# months of the year and heat that is the reason this app exists both cost more
+# than this admits, and so does a pram, a queue at a crossing, or being 70. Read
+# the minutes as the walk itself rather than as a promise about the clock.
+WALK_SPEED_MS = 1.35
+
 # The graph is one shared object and a search writes its weights onto it, so
 # two searches at once would read each other's. That was survivable while a
 # request was one plan; a whole-day scan holds the graph for twenty-four, and
@@ -146,7 +156,15 @@ def measure(scored, edges) -> dict:
     legs = scored.loc[edges]
     distance = float(legs["length"].sum())
     shaded = float((legs["length"] * legs["shade_fraction"]).sum())
-    return {"distance_m": distance, "shade_fraction": shaded / distance}
+    return {
+        "distance_m": distance,
+        # Here rather than in the browser, and derived rather than sent
+        # alongside, so that the one assumption about how fast a person walks
+        # lives in one place. Both endpoints get it for free by going through
+        # this function, and neither can drift from the other.
+        "duration_s": distance / WALK_SPEED_MS,
+        "shade_fraction": shaded / distance,
+    }
 
 
 def geometry(scored, edges):
@@ -204,6 +222,10 @@ def departures(graph, scored_by_time, origin, destination, alpha) -> dict:
         rows.append({
             "time": at.strftime("%H:%M"),
             "distance_m": leg["distance_m"],
+            # Not the same at every hour: the detour the shade is worth changes
+            # with the sun, and on a real walk across the centre that is a five
+            # minute spread between the shortest hour and the longest.
+            "duration_s": leg["duration_s"],
             "shade_fraction": leg["shade_fraction"],
             # The comparison is the product here too. A shade curve alone peaks
             # at dusk on every walk in the city, which is true and is about the
@@ -213,8 +235,9 @@ def departures(graph, scored_by_time, origin, destination, alpha) -> dict:
         })
 
     return {
-        # Constant across the day, so it is stated once rather than repeated in
-        # every row: the direct route is one path and one length.
+        # Constant across the day, so both are stated once rather than repeated
+        # in every row: the direct route is one path, one length, one duration.
         "baseline_distance_m": measure(first, direct)["distance_m"],
+        "baseline_duration_s": measure(first, direct)["duration_s"],
         "departures": rows,
     }
