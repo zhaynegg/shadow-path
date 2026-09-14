@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { DayPlan, Departure } from '../api/client'
 import { CHART, area, bands, gain, heightOf, polyline, share, spread, verdict } from './departures'
 import { minutes } from './format'
-import { clockAfter } from './stamps'
+import { clockAfter, endsIn } from './stamps'
 
 // [time, route shade, direct shade] -- the three numbers a stamp comes back as,
 // with the distance left out because nothing here reads it.
@@ -183,5 +183,33 @@ describe('clockAfter', () => {
         // a time, and neither is "23:70".
         expect(clockAfter('23:50', 20 * 60)).toBe('00:10')
         expect(clockAfter('23:00', 60 * 60)).toBe('00:00')
+    })
+})
+
+describe('endsIn', () => {
+    // A September day, thinned: whole hours in the middle, twenty-minute steps
+    // at dusk where a low sun moves a shadow across a street inside the hour.
+    const STAMPS = ['12:00', '13:00', '16:00', '16:20', '16:40', '17:00', '17:20']
+
+    it('says nothing when the walk stays inside the hour on screen', () => {
+        // Twenty minutes from 12:00 is still nearest 12:00. There is no second
+        // sun to warn anybody about.
+        expect(endsIn('12:00', 20 * 60, STAMPS)).toBeNull()
+    })
+
+    it('names the stamp the far end is really walked in', () => {
+        // An hour and a half from 12:00 lands at 13:30, which is nearest 13:00.
+        expect(endsIn('12:00', 90 * 60, STAMPS)).toBe('13:00')
+        expect(endsIn('16:00', 45 * 60, STAMPS)).toBe('16:40')
+    })
+
+    it('calls it dark once the walk runs past the last stamp', () => {
+        // Not "17:20's shadows" -- those have gone, and claiming them would be
+        // the same lie in the other direction.
+        expect(endsIn('17:00', 60 * 60, STAMPS)).toBe('dark')
+    })
+
+    it('has nothing to say without a manifest', () => {
+        expect(endsIn('12:00', 90 * 60, [])).toBeNull()
     })
 })

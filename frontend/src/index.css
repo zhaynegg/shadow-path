@@ -658,6 +658,16 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+/* The second line of the arrival: quieter, because it is a caveat on the first
+   rather than another fact. */
+.arrival.drift {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--ink-3);
+}
+
+.arrival.drift strong { color: var(--ink-2); font-weight: 600; }
+
 .summary-error { color: var(--danger); font-size: 12.5px; }
 
 /* --- departure chart --------------------------------------------------- */

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import type { RoutePlan } from '../api/client'
 import { metres, minutes, percent } from '../lib/format'
-import { clockAfter } from '../lib/stamps'
+import { clockAfter, endsIn } from '../lib/stamps'
 
 type RouteSummaryProp = {
     plan: RoutePlan | null,
@@ -14,6 +14,9 @@ type RouteSummaryProp = {
     // The stamp the walk was planned for, which is also when the walker is
     // assumed to set off -- so it is what the arrival clock counts from.
     time: string,
+    // The daylight stamps, so the panel can say when the walk runs on past the
+    // one the map is drawing.
+    stamps: string[],
     // The departure chart, which only makes sense once there is a walk to
     // chart. Passed in rather than built here so this card stays what it
     // has always been -- two routes and the difference between them -- and
@@ -67,7 +70,8 @@ function Row({ label, leg, seekingSun, mark }: RowProp) {
     )
 }
 
-function RouteSummary({ plan, loading, error, pointCount, alpha, time, children }: RouteSummaryProp) {
+function RouteSummary({ plan, loading, error, pointCount, alpha, time, stamps,
+    children }: RouteSummaryProp) {
     const seekingSun = alpha < 0
     const wanted = seekingSun ? 'sun' : 'shade'
     const found = seekingSun ? 'sunlit' : 'shaded'
@@ -108,6 +112,7 @@ function RouteSummary({ plan, loading, error, pointCount, alpha, time, children 
         // subtraction, read in whichever direction the walker asked for.
         const difference = plan.route.shade_fraction - plan.baseline.shade_fraction
         const gained = seekingSun ? -difference : difference
+        const lands = endsIn(time, plan.route.duration_s, stamps)
 
         body = (
             <>
@@ -132,6 +137,17 @@ function RouteSummary({ plan, loading, error, pointCount, alpha, time, children 
                     Set off at <strong>{time}</strong> and you are there by{' '}
                     <strong>{clockAfter(time, plan.route.duration_s)}</strong>.
                 </div>
+                {/* The route is planned against the sun as it moves, so a long
+                    walk is weighted by shadows the map is not drawing. Saying
+                    so is cheaper than letting the line look wrong. */}
+                {lands && (
+                    <div className="arrival drift">
+                        {lands === 'dark'
+                            ? 'The far end of it is after dark, when nothing casts a shadow at all.'
+                            : <>The far end of it is walked in <strong>{lands}</strong>&rsquo;s
+                                shadows, not the {time} on the map.</>}
+                    </div>
+                )}
                 {children}
             </>
         )

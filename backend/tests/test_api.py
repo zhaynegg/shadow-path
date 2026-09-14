@@ -9,6 +9,8 @@ graph is memoised under.
 import datetime as dt
 
 import geopandas as gpd
+import numpy as np
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -18,6 +20,7 @@ from shapely.geometry import LineString
 # main() of its own for the console script, and that name shadows this module.
 import backend.main as main  # noqa: PLR0402 -- the rewrite ruff suggests is the bug
 from backend.config import CRS, LAT, LON, TZ, today
+from backend.core.day import at_one_stamp
 from backend.core.solar import daylight_times
 from backend.main import RouteRequest, WalkRequest, app
 
@@ -48,8 +51,13 @@ def clear_caches():
     test reads the previous test's graph, and passes or fails for reasons that
     have nothing to do with it.
     """
-    main.scored_edges.cache_clear()
-    main.graph_edges.cache_clear()
+    for cached in (main.scored_edges, main.scored_day, main.graph_edges, main.streets):
+        # Some tests replace one of these with a plain stand-in, which has no
+        # cache to clear. Asking anyway is how this helper turns a monkeypatch
+        # into an AttributeError three tests later.
+        clear = getattr(cached, "cache_clear", None)
+        if clear is not None:
+            clear()
 
 
 def test_valid_request_parses_and_alpha_defaults_to_shade_seeking():
@@ -298,55 +306,6 @@ def test_day_request_inherits_the_bounds_a_route_request_has():
             WalkRequest(**day_body(alpha=rejected))
 
 
-def test_day_endpoint_scans_exactly_the_stamps_the_tiles_were_cut_for(monkeypatch):
-    """daylight_times is what export_shadow_tiles.py cut the tiles and the
-    scores with. Reading the window from anywhere else -- a range of hours
-    written down here, the manifest, the clock -- is how the scan ends up
-    asking for a stamp that has no answer on disk, in December especially.
-    """
-    seen: dict[str, list] = {}
-
-    def fake_departures(graph, scored_by_time, origin, destination, alpha):
-        seen["times"] = sorted(scored_by_time)
-        seen["alpha"] = alpha
-        return {"baseline_distance_m": 100.0, "departures": []}
-
-    monkeypatch.setattr(main, "graph", lambda: None)
-    monkeypatch.setattr(main, "scored_edges", lambda date, hour, minute: (date, hour, minute))
-    monkeypatch.setattr(main.scores, "missing", lambda *args: [])
-    monkeypatch.setattr(main, "departures", fake_departures)
-
-    response = TestClient(app).post("/api/day", json=day_body(alpha=-4.0))
-
-    assert response.status_code == 200
-    assert seen["times"] == daylight_times(LAT, LON, today(), TZ)
-    # Signed all the way through. A scan that dropped the sign would plot the
-    # shadiest hour to somebody who asked for the sunniest.
-    assert seen["alpha"] == -4.0
-
-
-def test_day_endpoint_declines_rather_than_computing_a_day_of_fields(monkeypatch):
-    """The guard that makes a scan safe to offer at all.
-
-    One missing stamp is a cache miss the API absorbs by computing the field
-    itself -- half a minute, and correct. Twenty-four of them is twelve minutes
-    of one request holding the process, so the scan checks first. It has to
-    check *before* touching the graph, or declining costs as much as agreeing.
-    """
-    def no_graph():
-        raise AssertionError("the scan must decline before it reaches the graph")
-
-    monkeypatch.setattr(main, "graph", no_graph)
-    monkeypatch.setattr(main.scores, "missing", lambda *args: [dt.time(6, 0), dt.time(6, 20)])
-
-    response = TestClient(app).post("/api/day", json=day_body())
-
-    assert response.status_code == 503
-    # Names the script that fixes it. A bare 503 sends a reader to the logs for
-    # something a sentence can tell them.
-    assert "export_shadow_tiles.py" in response.json()["detail"]
-
-
 def test_day_endpoint_rejects_a_body_with_no_date():
     """422, the same as /api/route. The date is what keeps the scan on the sun
     the map is drawing, and a default here would be the server guessing it.
@@ -355,3 +314,123 @@ def test_day_endpoint_rejects_a_body_with_no_date():
     del body["date"]
 
     assert TestClient(app).post("/api/day", json=body).status_code == 422
+
+
+def a_day(edges: int = 1):
+    """The smallest thing the router will accept as a date's worth of sun."""
+    return at_one_stamp(np.full(edges, 0.5, dtype="float32"), dt.time(12, 0))
+
+
+def test_scored_day_covers_exactly_the_stamps_the_tiles_were_cut_for(monkeypatch):
+    """daylight_times is what export_shadow_tiles.py cut the tiles and the
+    scores with. Reading the window from anywhere else -- a range of hours
+    written down here, the manifest, the clock -- is how a scan ends up asking
+    for a stamp that has no answer on disk, in December especially.
+    """
+    asked: list[dt.time] = []
+
+    def fake_load(cache, radius, date, at, index):
+        asked.append(at)
+        return pd.Series([0.5], index=index)
+
+    edges = gpd.GeoDataFrame(geometry=[LineString([(0, 0), (100, 0)])], crs=CRS)
+    monkeypatch.setattr(main, "graph_edges", lambda: edges)
+    monkeypatch.setattr(main.scores, "missing", lambda *args: [])
+    monkeypatch.setattr(main.scores, "load", fake_load)
+    clear_caches()
+
+    day = main.scored_day(today())
+
+    assert asked == daylight_times(LAT, LON, today(), TZ)
+    # Every stamp, plus the night row underneath them.
+    assert day is not None
+    assert len(day.shade) == len(asked) + 1
+
+    clear_caches()
+
+
+def test_scored_day_is_all_of_a_date_or_none_of_it(monkeypatch):
+    """A day with a hole in it would route a walk straight through the hole,
+    weighting those streets as though they were in full sun -- which is a wrong
+    answer delivered confidently, and the reason scores.load is strict.
+    """
+    edges = gpd.GeoDataFrame(geometry=[LineString([(0, 0), (100, 0)])], crs=CRS)
+    calls = {"n": 0}
+
+    def sometimes(cache, radius, date, at, index):
+        calls["n"] += 1
+        return None if calls["n"] == 3 else pd.Series([0.5], index=index)
+
+    monkeypatch.setattr(main, "graph_edges", lambda: edges)
+    monkeypatch.setattr(main.scores, "missing", lambda *args: [])
+    monkeypatch.setattr(main.scores, "load", sometimes)
+    clear_caches()
+
+    assert main.scored_day(today()) is None
+
+    clear_caches()
+
+
+def test_day_endpoint_declines_before_it_reaches_the_graph(monkeypatch):
+    """The guard that makes a scan safe to offer at all, and it has to be the
+    cheap half that runs first.
+
+    One missing stamp is a cache miss /api/route absorbs by computing the field
+    itself -- half a minute, and correct. Twenty-four of them is twelve minutes
+    of one request holding the process. Statting the files costs nothing;
+    loading 153k edges to reach the same conclusion does not.
+    """
+    def no_graph():
+        raise AssertionError("the scan must decline before it reaches the graph")
+
+    monkeypatch.setattr(main, "graph", no_graph)
+    monkeypatch.setattr(main, "graph_edges", no_graph)
+    monkeypatch.setattr(main.scores, "missing", lambda *args: [dt.time(6, 0), dt.time(6, 20)])
+    clear_caches()
+
+    response = TestClient(app).post("/api/day", json=day_body())
+
+    assert response.status_code == 503
+    # Names the script that fixes it. A bare 503 sends a reader to the logs for
+    # something a sentence can tell them.
+    assert "export_shadow_tiles.py" in response.json()["detail"]
+
+    clear_caches()
+
+
+def test_day_endpoint_passes_the_signed_alpha_through(monkeypatch):
+    """Signed all the way down. A scan that dropped the sign would plot the
+    shadiest hour to somebody who asked for the sunniest.
+    """
+    seen = {}
+
+    def fake_departures(streets, day, origin, destination, alpha):
+        seen["alpha"] = alpha
+        return {"baseline_distance_m": 100.0, "baseline_duration_s": 74.0, "departures": []}
+
+    monkeypatch.setattr(main, "scored_day", lambda date: a_day())
+    monkeypatch.setattr(main, "streets", lambda: None)
+    monkeypatch.setattr(main, "departures", fake_departures)
+
+    response = TestClient(app).post("/api/day", json=day_body(alpha=-4.0))
+
+    assert response.status_code == 200
+    assert seen["alpha"] == -4.0
+
+
+def test_route_falls_back_to_one_stamp_without_a_cached_day(monkeypatch):
+    """A checkout that has never run the export still routes -- at the sun it
+    sets off under, end to end, which is what this API answered for its whole
+    life before it could follow a clock. The scan has no such fallback; a
+    single route does, because a single route can afford one field.
+    """
+    edges = gpd.GeoDataFrame(
+        {"shade_fraction": [0.4]}, geometry=[LineString([(0, 0), (100, 0)])], crs=CRS)
+
+    monkeypatch.setattr(main, "scored_day", lambda date: None)
+    monkeypatch.setattr(main, "scored_edges", lambda date, hour, minute: edges)
+
+    day = main.sun_over(today(), dt.time(13, 0))
+
+    assert not day.crosses_stamps
+    assert day.shade.tolist() == [[pytest.approx(0.4)]]

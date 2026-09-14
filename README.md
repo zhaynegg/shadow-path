@@ -93,6 +93,9 @@ unwanted = 1 − shade_fraction   when α ≥ 0   (sunlit metres, to a shade-see
 baseline is always computed alongside so the UI can say *"18% longer, 2.3× more
 shade"* — that comparison is the product.
 
+The weight is read from whichever stamp the walker is actually in when they
+reach the edge — see **The sun moves while you walk** below.
+
 `α` is **signed**. Negative α is sun-seeking, and in Astana that is not a
 novelty mode — it's the winter product.
 
@@ -103,6 +106,70 @@ there is no cheapest path left to find. A* does not detect that; it settles
 nodes assuming they can only get dearer, and answers anyway. Moving the penalty
 onto the unwanted half instead keeps every weight ≥ length, which also keeps the
 straight-line A* heuristic admissible at any α.
+
+### The sun moves while you walk
+
+The router used to price a whole walk at one instant. You asked for 17:40 and
+the last kilometre was weighted by 17:40's shadows even though you reach it at
+18:25, by which time they had gone. Fine for twenty minutes at midday — a +20
+minute step there moves 3.6% of the network — and poor for three quarters of an
+hour at dusk, where the same step moves a quarter of it and an hour moves 59%.
+
+So the search carries a clock. The state is `(node, stamp)`, not `node`, and
+each edge is priced from the stamp the walker sets off along it in. This is why
+`nx.astar_path` is gone: A* labels each node once, which is only valid when
+"the cheapest way to node X" is a single fact, and under a moving sun it is not.
+
+Two things make it cheap. **Walking pace does not depend on shade**, so where
+you are in the day is a function of how far you have come and nothing else —
+there is no feedback loop of the kind traffic has, and no node turns out to be
+reachable at more than a stamp or two. And the **straight-line heuristic
+survives unchanged**: every weight is at least the edge's own length at every
+stamp, so it can never overestimate whichever sun ends up pricing an edge.
+(That invariant is also why the weight table is float64 while `day.shade` is
+float32 — rounding the product down to float32 puts it under the length by an
+ulp on every edge whose multiplier is exactly 1.)
+
+Measured on the 15 km graph, against the same search written the old way:
+
+| walk | one frozen stamp | moving sun | states |
+|---|---|---|---|
+| ~1.5 km | 0.7 ms | 1.2 ms | 834 → 935 |
+| ~3.8 km | 2.0 ms | 3.8 ms | 2,334 → 2,594 |
+| ~9 km | 22.1 ms | 26.7 ms | 20,525 → 16,601 |
+
+Dropping networkx from the hot path more than paid for the clock: `/api/route`
+went from 0.24 s to **0.02 s** warm, and `/api/day` from 1.3 s to **0.24 s**.
+`nx.set_edge_attributes` went with it, and so did the lock that existed only
+because two concurrent requests were writing weights onto one shared graph.
+
+**What it buys.** Mostly honesty, and some route. On a 13 September walk across
+the centre at α = 6, comparing the old path to the new one, both measured
+against the sun as it really moves:
+
+| depart | walk | claimed | actually | new route |
+|---|---|---|---|---|
+| 08:00 | 9 km | 73.0% | 62.6% | 63.5% |
+| 12:00 | 9 km | 53.1% | 56.4% | 56.5% |
+| 15:00 | 9 km | 65.7% | 70.4% | 74.5% |
+| 17:40 | 9 km | 88.0% | 98.3% | 98.2% |
+
+The gap between *claimed* and *actually* is the bug: up to ten points, and
+signed by the time of day — a morning walk was over-claimed because shadows
+shrink as the sun climbs, an evening one under-claimed because they grow. The
+new route is worth another 0 to 4 points on top, and twice in that table it
+trades a fraction of a point of shade for a materially shorter walk (390 m at
+08:00, 960 m at 17:40) — which is exactly what α = 6 asks it to do.
+
+**The approximation that is left.** Settling on `(node, stamp)` treats two paths
+that arrive in the same stamp as one state even if one walked further to get
+there. The error that hides is bounded by how much the shade moves between
+neighbouring stamps — which is what the stamps are spaced by, finest at dawn and
+dusk. Where it would hurt most, the buckets are narrowest.
+
+The map can only draw one moment, so when a walk runs on past the stamp on
+screen the panel says so: *"the far end of it is walked in 11:00's shadows, not
+the 10:00 on the map."*
 
 ## The decision that shapes everything
 
@@ -476,15 +543,12 @@ heat this app exists because of, a pram, a crossing, or being 70 all cost more
 than it admits. Read the minutes as the length of the walk rather than as a
 promise about the clock.
 
-Two things it does **not** model, both worth knowing before trusting a long one:
+The pace is what turns distance into time of day for the search as well as
+minutes for the panel, which only works because it does not depend on shade —
+see **The sun moves while you walk** above.
 
-- **The sun moves while you walk.** A route is planned against one stamp, and a
-  45-minute walk leaving at 17:40 arrives at 18:25, by which time the shade it
-  was routed through has gone. The scan is the honest tool for a walk that long
-  — it shows what each departure is worth — but neither endpoint re-plans
-  mid-walk.
-- **Arrival is a clock, not a date.** It wraps at midnight, because everything on
-  this map belongs to one day.
+Arrival is a clock, not a date: it wraps at midnight, because everything on this
+map belongs to one day.
 
 ## Layout
 
@@ -512,11 +576,15 @@ backend/
       scoring.py             edge sub-segmentation + shade fraction
       scores.py              last night's shade per edge, so routing has
                              no geometry left to do at request time
-      routing.py             weighted A*, baseline route, stats,
-                             and the whole-day departure scan
+      day.py                 one date's stamps stacked, plus night, plus
+                             the clock that says which one a minute is in
+      search.py              the graph as flat arrays, and an A* over
+                             (node, stamp) -- it knows time, not sun
+      routing.py             what a metre costs a walker with a preference,
+                             how fast they get through it, and the day scan
   tests/
     test_scoring.py, test_routing.py, test_api.py, test_buildings.py,
-    test_scores.py
+    test_scores.py, test_day.py
 
 frontend/src/
   api/client.ts              typed fetch; mirrors main.py and the tile manifest

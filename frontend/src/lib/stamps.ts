@@ -76,3 +76,23 @@ export const clockAfter = (time: string, seconds: number) => {
     const at = (toMinutes(time) + Math.round(seconds / 60)) % 1440
     return `${String(Math.floor(at / 60)).padStart(2, '0')}:${String(at % 60).padStart(2, '0')}`
 }
+
+// Which stamp's shadows the far end of a walk actually happens in, or null when
+// that is the one already on screen and there is nothing to say.
+//
+// The router now plans against the sun as it moves, so a long walk is weighted
+// by shadows the map is not drawing: leave at 17:00 and the last kilometre is
+// priced at 17:40, because that is when you are on it. The map can only show
+// one moment at a time, which is the right thing for a map to do -- so the
+// panel says the other one out loud rather than letting the line look wrong.
+export const endsIn = (time: string, seconds: number, stamps: string[]) => {
+    if (!stamps.length) return null
+
+    const arriving = toMinutes(time) + Math.round(seconds / 60)
+    // Past the last stamp there is nothing left to draw: the sun is down, and
+    // "18:20's shadows" would be a claim about shadows that have gone.
+    if (arriving > toMinutes(stamps[stamps.length - 1])) return 'dark'
+
+    const landed = nearestStamp(arriving, stamps)
+    return landed === time ? null : landed
+}
