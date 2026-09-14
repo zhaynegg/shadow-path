@@ -97,6 +97,23 @@ def load(cache_dir: Path, radius: float, date: dt.date, at: dt.time, index) -> p
     return aligned.astype("float64").fillna(0.0)
 
 
+def missing(cache_dir: Path, radius: float, date: dt.date,
+            times: list[dt.time]) -> list[dt.time]:
+    """Which of these stamps have no scores written for them.
+
+    `load` returning None is an ordinary outcome for one stamp -- main.py
+    computes that field itself and the caller waits half a minute. It is not an
+    ordinary outcome for a whole day: twenty-four fallbacks is twelve minutes
+    of one request holding the process, which is not a slow answer but an
+    outage one caller can cause. So the day scan asks first and declines.
+
+    Existence only. Reading two dozen files to find out whether they are worth
+    reading costs more than the check is worth, and every other way a file can
+    be unusable still leaves `load` free to reject it on the way past.
+    """
+    return [at for at in times if not scores_path(cache_dir, radius, date, at).exists()]
+
+
 def prune(cache_dir: Path, radius: float, keep: dt.date) -> list[Path]:
     """Drop scores for every date but this one.
 

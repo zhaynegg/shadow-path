@@ -1,3 +1,4 @@
+import threading
 from itertools import pairwise
 
 import geopandas as gpd
@@ -17,10 +18,28 @@ MAX_SNAP_M = 300.0
 # still has something to reject, nan and inf included.
 MAX_ALPHA = 12.0
 
+# The graph is one shared object and a search writes its weights onto it, so
+# two searches at once would read each other's. That was survivable while a
+# request was one plan; a whole-day scan holds the graph for twenty-four, and
+# two of those overlapping would interleave every stamp. Held around the write
+# and the read together -- `taken` reads back the same attribute `walk` set --
+# and released before measuring, which only touches the scored frame.
+GRAPH_LOCK = threading.Lock()
 
-def nearest_node(graph, lat: float, lon: float) -> int:
-    """The graph node closest to a lat/lon, if one is close enough to mean it."""
-    nodes = ox.graph_to_gdfs(graph, edges=False)
+
+def graph_nodes(graph) -> gpd.GeoDataFrame:
+    """The graph's nodes as points, which is all that snapping needs."""
+    return ox.graph_to_gdfs(graph, edges=False)
+
+
+def snap(nodes, lat: float, lon: float) -> int:
+    """The graph node closest to a lat/lon, if one is close enough to mean it.
+
+    Takes the node frame rather than the graph because building it is the
+    expensive half: 0.36s on the 15 km disc, against A*'s 9ms. It does not
+    depend on the sun, so a caller planning the same walk at every hour of the
+    day builds it once and snaps once -- see `departures`.
+    """
     point = gpd.GeoSeries([Point(lon, lat)], crs=4326).to_crs(CRS).iloc[0]
 
     distances = nodes.distance(point)
@@ -36,6 +55,24 @@ def nearest_node(graph, lat: float, lon: float) -> int:
         )
     return node
 
+
+def nearest_node(graph, lat: float, lon: float) -> int:
+    """`snap`, for a caller holding a graph and doing it only once."""
+    return snap(graph_nodes(graph), lat, lon)
+
+
+def endpoints(nodes, origin, destination) -> tuple[int, int]:
+    """Both ends of a walk, snapped, with the degenerate case ruled out."""
+    orig = snap(nodes, *origin)
+    dest = snap(nodes, *destination)
+
+    # Two clicks a few metres apart snap to the same corner. The path is then a
+    # single node, which has no edges to measure, draw, or divide by.
+    if orig == dest:
+        raise ValueError(
+            "Those two points are the same street corner. Pick somewhere further apart."
+        )
+    return orig, dest
 
 
 def edge_weights(scored, alpha):
@@ -58,10 +95,8 @@ def edge_weights(scored, alpha):
     return scored["length"] * (1 + abs(alpha) * unwanted)
 
 
-def route(graph, scored, origin, destination, alpha) -> dict:
-    weights = edge_weights(scored, alpha)
-    nx.set_edge_attributes(graph, weights.to_dict(), "shade_weight")
-    nx.set_edge_attributes(graph, scored["shade_fraction"].to_dict(), "shade_fraction")
+def search(graph, orig: int, dest: int) -> list[int]:
+    """The cheapest path under whatever is currently on `shade_weight`."""
 
     # Straight-line metres between two nodes. Admissible for any alpha because
     # every weight above is at least the edge's own length, which is at least
@@ -70,35 +105,116 @@ def route(graph, scored, origin, destination, alpha) -> dict:
         return ((graph.nodes[u]["x"] - graph.nodes[v]["x"]) ** 2
         + (graph.nodes[u]["y"] - graph.nodes[v]["y"]) ** 2) ** 0.5
 
-    orig = nearest_node(graph, *origin)
-    dest = nearest_node(graph, *destination)
-
-    # Two clicks a few metres apart snap to the same corner. The path is then a
-    # single node, which has no edges to measure, draw, or divide by.
-    if orig == dest:
-        raise ValueError(
-            "Those two points are the same street corner. Pick somewhere further apart."
-        )
-
     try:
-        path = nx.astar_path(graph, orig, dest, heuristic=heuristic, weight="shade_weight")
+        return nx.astar_path(graph, orig, dest, heuristic=heuristic, weight="shade_weight")
     except nx.NetworkXNoPath as exc:
         raise ValueError("No walking route connects those two points.") from exc
 
-    distance = 0.0
-    shaded = 0.0
-    for u, v in pairwise(path):
-        _, data = min(graph[u][v].items(), key=lambda kv: kv[1]["shade_weight"])
-        distance += data["length"]
-        shaded += data["length"] * data["shade_fraction"]
 
-    edges = ox.routing.route_to_gdf(graph, path, weight="shade_weight")
-    line = shapely.line_merge(shapely.MultiLineString([list(g.coords) for g in edges.geometry]))
+def taken(graph, path) -> list[tuple]:
+    """The (u, v, key) edges the search actually walked.
 
-    return {"distance_m": distance, "shade_fraction": shaded / distance, "geometry": line}
+    Parallel edges between one pair of corners are real -- a street and the
+    footway beside it share both ends -- and A* took whichever was cheapest, so
+    anything measuring the result afterwards has to read back the same one.
+    """
+    return [(u, v, min(graph[u][v].items(), key=lambda kv: kv[1]["shade_weight"])[0])
+            for u, v in pairwise(path)]
+
+
+def walk(graph, scored, orig: int, dest: int, alpha: float) -> list[tuple]:
+    """Plan one walk between two already-snapped nodes; returns its edges.
+
+    Separated from measuring it because the two are wanted at different rates.
+    A day scan plans the direct route once and measures it twenty-four times:
+    at alpha 0 the weight is the edge's own length, and a length does not
+    depend on where the sun is, so the path cannot either. What changes across
+    the day is only how much of that one path happens to lie in shade.
+    """
+    with GRAPH_LOCK:
+        nx.set_edge_attributes(graph, edge_weights(scored, alpha).to_dict(), "shade_weight")
+        return taken(graph, search(graph, orig, dest))
+
+
+def measure(scored, edges) -> dict:
+    """What one fixed set of edges is worth under one stamp's scores.
+
+    Read off the scored frame rather than the graph, which is what lets the
+    same path be priced at several times of day: the graph carries whichever
+    stamp was written to it last, the frames carry one each.
+    """
+    legs = scored.loc[edges]
+    distance = float(legs["length"].sum())
+    shaded = float((legs["length"] * legs["shade_fraction"]).sum())
+    return {"distance_m": distance, "shade_fraction": shaded / distance}
+
+
+def geometry(scored, edges):
+    """One line for the whole walk, for the map to draw."""
+    return shapely.line_merge(shapely.MultiLineString(
+        [list(line.coords) for line in scored.loc[edges].geometry]))
+
+
+def route(graph, scored, origin, destination, alpha) -> dict:
+    orig, dest = endpoints(graph_nodes(graph), origin, destination)
+    edges = walk(graph, scored, orig, dest, alpha)
+    return measure(scored, edges) | {"geometry": geometry(scored, edges)}
+
 
 def plan(graph, scored, origin, destination, alpha) -> dict:
+    # Snapped once for both legs. It is the same two clicks either way, and
+    # building the node frame costs more than both searches put together.
+    orig, dest = endpoints(graph_nodes(graph), origin, destination)
+
+    def leg(preference):
+        edges = walk(graph, scored, orig, dest, preference)
+        return measure(scored, edges) | {"geometry": geometry(scored, edges)}
+
+    return {"route": leg(alpha), "baseline": leg(0.0)}
+
+
+def departures(graph, scored_by_time, origin, destination, alpha) -> dict:
+    """The same walk, planned at every stamp of one day.
+
+    "When should I leave?" is the question a shadow map is uniquely able to
+    answer, and the expensive part of answering it is already on disk: the
+    nightly export scores the whole graph for every stamp, so a scan is a
+    parquet read and an A* per hour rather than twenty-four unions of the city.
+    Measured on the 15 km graph: 134 ms a stamp, about three seconds for a
+    September day.
+
+    No geometry comes back. The answer is a time, and once the reader picks one
+    the map asks /api/route for that stamp the way it always did -- sending two
+    dozen polylines to draw one of them would be the larger half of the payload
+    and none of the point.
+    """
+    orig, dest = endpoints(graph_nodes(graph), origin, destination)
+
+    times = sorted(scored_by_time)
+    first = scored_by_time[times[0]]
+
+    # Searched once, priced at every stamp -- see `walk`. Doing it per stamp
+    # would be correct and would return the identical path twenty-four times.
+    direct = walk(graph, first, orig, dest, 0.0)
+
+    rows = []
+    for at in times:
+        scored = scored_by_time[at]
+        leg = measure(scored, walk(graph, scored, orig, dest, alpha))
+        rows.append({
+            "time": at.strftime("%H:%M"),
+            "distance_m": leg["distance_m"],
+            "shade_fraction": leg["shade_fraction"],
+            # The comparison is the product here too. A shade curve alone peaks
+            # at dusk on every walk in the city, which is true and is about the
+            # sun rather than about the route; read against the direct path it
+            # says where detouring actually buys something.
+            "baseline_shade_fraction": measure(scored, direct)["shade_fraction"],
+        })
+
     return {
-        "route": route(graph, scored, origin, destination, alpha),
-        "baseline": route(graph, scored, origin, destination, 0.0),
+        # Constant across the day, so it is stated once rather than repeated in
+        # every row: the direct route is one path and one length.
+        "baseline_distance_m": measure(first, direct)["distance_m"],
+        "departures": rows,
     }

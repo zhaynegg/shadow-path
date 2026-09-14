@@ -634,6 +634,131 @@ body {
 
 .summary-error { color: var(--danger); font-size: 12.5px; }
 
+/* --- departure chart --------------------------------------------------- */
+
+/* Everything below the verdict, set off from it the way the stat rows are set
+   off from each other -- it is a second question about the same walk, not more
+   of the answer to the first. */
+.depart-slot,
+.depart {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--panel-brd);
+}
+
+.btn-wide {
+    display: block;
+    width: 100%;
+}
+
+/* Scaled by width, aspect ratio kept: the panel is 314px on a desktop and the
+   full width of a phone, and the chart should be the same picture in both
+   rather than a stretched one. */
+.chart {
+    display: block;
+    width: 100%;
+    height: auto;
+    overflow: visible;
+}
+
+.chart-area {
+    opacity: 0.13;
+}
+
+.chart-route {
+    fill: none;
+    stroke: var(--route);
+    stroke-width: 1.8;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+
+/* The grey dashed line on the map, the dash in the stat row, and this: one
+   walk, marked the same way in all three places. */
+.chart-direct {
+    fill: none;
+    stroke: var(--baseline);
+    stroke-width: 1.4;
+    stroke-dasharray: 3 3;
+    stroke-linecap: round;
+}
+
+/* Where the time slider is standing. Faint on purpose -- it is a cross
+   reference between two controls, not a third thing to read. */
+.chart-now {
+    stroke: var(--ink-3);
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+    opacity: 0.55;
+}
+
+.chart-best {
+    fill: var(--route);
+    stroke: #fff;
+    stroke-width: 1.6;
+}
+
+/* Invisible, and the whole width of the chart between them. A chart you have
+   just read the shape of should be a chart you can point at. */
+.chart-hit {
+    fill: transparent;
+    cursor: pointer;
+}
+
+.chart-hit:hover {
+    fill: var(--ink);
+    fill-opacity: 0.05;
+}
+
+/* The recommendation, and a button because it is also the way to act on it:
+   pressing it moves the map and the shadows to that hour. */
+.depart-pick {
+    font: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    margin-top: 10px;
+    padding: 8px 11px;
+    border-radius: var(--r-md);
+    border: 1px solid transparent;
+    background: rgba(37, 99, 235, 0.09);
+    color: var(--ink);
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+    transition: background 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.depart-pick:hover {
+    background: rgba(37, 99, 235, 0.15);
+    border-color: rgba(37, 99, 235, 0.28);
+}
+
+.depart-pick strong {
+    font-weight: 660;
+    font-variant-numeric: tabular-nums;
+}
+
+.depart-pick:focus-visible {
+    outline: 2px solid rgba(37, 99, 235, 0.5);
+    outline-offset: 2px;
+}
+
+.depart-share {
+    color: var(--ink-2);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.depart .verdict {
+    margin-top: 9px;
+    padding-top: 0;
+    border-top: none;
+}
+
 /* --- spinner ----------------------------------------------------------- */
 
 .spinner {
@@ -757,6 +882,18 @@ body {
     .maplibregl-ctrl-bottom-right .maplibregl-ctrl-scale { display: none; }
 
     .summary { bottom: 34px; }
+
+    /* The card grows upward here, and with a departure chart in it that is far
+       enough to reach the dock. Capped and scrolled rather than allowed to run
+       underneath: the dock is opaque glass, so the collision is not visible as
+       a collision -- it reads as a card that has been cut off. */
+    .summary {
+        max-height: 46vh;
+        overflow-y: auto;
+        /* Scrolling to the end of the card should not then start panning the
+           city underneath it. */
+        overscroll-behavior: contain;
+    }
 }
 
 /* Motion is decoration here -- every number is also written out. */

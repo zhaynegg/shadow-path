@@ -17,8 +17,9 @@ from shapely.geometry import LineString
 # `import ... as`, not `from backend import main`: backend/__init__.py defines a
 # main() of its own for the console script, and that name shadows this module.
 import backend.main as main  # noqa: PLR0402 -- the rewrite ruff suggests is the bug
-from backend.config import CRS, today
-from backend.main import RouteRequest, app
+from backend.config import CRS, LAT, LON, TZ, today
+from backend.core.solar import daylight_times
+from backend.main import RouteRequest, WalkRequest, app
 
 
 def valid_request(**overrides) -> dict:
@@ -36,6 +37,19 @@ def valid_request(**overrides) -> dict:
         "minute": 0,
         "alpha": 3.0,
     } | overrides
+
+
+def clear_caches():
+    """Both lru_caches these tests fill, and why there are two of them.
+
+    graph_edges holds the edge frame on its own now, because it depends on the
+    graph alone and every stamp was rebuilding it. That also means a fake frame
+    installed by monkeypatch outlives the test that installed it -- so the next
+    test reads the previous test's graph, and passes or fails for reasons that
+    have nothing to do with it.
+    """
+    main.scored_edges.cache_clear()
+    main.graph_edges.cache_clear()
 
 
 def test_valid_request_parses_and_alpha_defaults_to_shade_seeking():
@@ -154,7 +168,7 @@ def test_scored_edges_keys_on_the_date_not_only_the_hour(monkeypatch):
 
     # lru_cache outlives the test that filled it. Without this the assertions
     # below read whatever an earlier run left in there.
-    main.scored_edges.cache_clear()
+    clear_caches()
 
     june = dt.date(today().year, 6, 21)
     december = dt.date(today().year, 12, 21)
@@ -163,7 +177,7 @@ def test_scored_edges_keys_on_the_date_not_only_the_hour(monkeypatch):
 
     assert [when.date() for when in seen] == [june, december]
 
-    main.scored_edges.cache_clear()
+    clear_caches()
 
 
 def test_scored_edges_reuses_the_same_date_and_time(monkeypatch):
@@ -187,14 +201,14 @@ def test_scored_edges_reuses_the_same_date_and_time(monkeypatch):
     # must not decide which branch runs -- without this, the assertion below
     # passes on a cold checkout and fails on a warm one.
     monkeypatch.setattr(main.scores, "load", lambda *args, **kwargs: None)
-    main.scored_edges.cache_clear()
+    clear_caches()
 
     main.scored_edges(today(), 13, 0)
     main.scored_edges(today(), 13, 0)
 
     assert len(seen) == 1
 
-    main.scored_edges.cache_clear()
+    clear_caches()
 
 
 def test_scored_edges_keys_on_the_minute_too(monkeypatch):
@@ -221,14 +235,14 @@ def test_scored_edges_keys_on_the_minute_too(monkeypatch):
     # must not decide which branch runs -- without this, the assertion below
     # passes on a cold checkout and fails on a warm one.
     monkeypatch.setattr(main.scores, "load", lambda *args, **kwargs: None)
-    main.scored_edges.cache_clear()
+    clear_caches()
 
     for minute in (0, 20, 40):
         main.scored_edges(today(), 17, minute)
 
     assert [when.minute for when in seen] == [0, 20, 40]
 
-    main.scored_edges.cache_clear()
+    clear_caches()
 
 
 @pytest.mark.parametrize("minute", [1, 10, 30, 59, -1])
@@ -251,3 +265,93 @@ def test_minute_defaults_to_the_top_of_the_hour():
     del fields["minute"]
 
     assert RouteRequest(**fields).minute == 0
+
+
+def day_body(**overrides) -> dict:
+    """A /api/day body, JSON-ready and with no stamp in it.
+
+    The scan is the one endpoint that names no time: it asks about every stamp
+    the date has, which is what "when should I leave?" means.
+    """
+    return {
+        "origin": [51.1605, 71.4704],
+        "destination": [51.1700, 71.4300],
+        "date": today().isoformat(),
+        "alpha": 3.0,
+    } | overrides
+
+
+def test_day_request_inherits_the_bounds_a_route_request_has():
+    """Both endpoints take the same two ends, date and preference, so they take
+    them from the same model. Written down because the alternative -- a second
+    model with the fields copied over -- is how one of them ends up a year
+    later with a validator the other one grew and it did not.
+    """
+    assert WalkRequest(**day_body()).alpha == 3.0
+
+    for far in (today() + dt.timedelta(days=400), today() - dt.timedelta(days=400)):
+        with pytest.raises(ValidationError):
+            WalkRequest(**day_body(date=far))
+
+    for rejected in (float("nan"), float("inf"), main.MAX_ALPHA + 0.1):
+        with pytest.raises(ValidationError):
+            WalkRequest(**day_body(alpha=rejected))
+
+
+def test_day_endpoint_scans_exactly_the_stamps_the_tiles_were_cut_for(monkeypatch):
+    """daylight_times is what export_shadow_tiles.py cut the tiles and the
+    scores with. Reading the window from anywhere else -- a range of hours
+    written down here, the manifest, the clock -- is how the scan ends up
+    asking for a stamp that has no answer on disk, in December especially.
+    """
+    seen: dict[str, list] = {}
+
+    def fake_departures(graph, scored_by_time, origin, destination, alpha):
+        seen["times"] = sorted(scored_by_time)
+        seen["alpha"] = alpha
+        return {"baseline_distance_m": 100.0, "departures": []}
+
+    monkeypatch.setattr(main, "graph", lambda: None)
+    monkeypatch.setattr(main, "scored_edges", lambda date, hour, minute: (date, hour, minute))
+    monkeypatch.setattr(main.scores, "missing", lambda *args: [])
+    monkeypatch.setattr(main, "departures", fake_departures)
+
+    response = TestClient(app).post("/api/day", json=day_body(alpha=-4.0))
+
+    assert response.status_code == 200
+    assert seen["times"] == daylight_times(LAT, LON, today(), TZ)
+    # Signed all the way through. A scan that dropped the sign would plot the
+    # shadiest hour to somebody who asked for the sunniest.
+    assert seen["alpha"] == -4.0
+
+
+def test_day_endpoint_declines_rather_than_computing_a_day_of_fields(monkeypatch):
+    """The guard that makes a scan safe to offer at all.
+
+    One missing stamp is a cache miss the API absorbs by computing the field
+    itself -- half a minute, and correct. Twenty-four of them is twelve minutes
+    of one request holding the process, so the scan checks first. It has to
+    check *before* touching the graph, or declining costs as much as agreeing.
+    """
+    def no_graph():
+        raise AssertionError("the scan must decline before it reaches the graph")
+
+    monkeypatch.setattr(main, "graph", no_graph)
+    monkeypatch.setattr(main.scores, "missing", lambda *args: [dt.time(6, 0), dt.time(6, 20)])
+
+    response = TestClient(app).post("/api/day", json=day_body())
+
+    assert response.status_code == 503
+    # Names the script that fixes it. A bare 503 sends a reader to the logs for
+    # something a sentence can tell them.
+    assert "export_shadow_tiles.py" in response.json()["detail"]
+
+
+def test_day_endpoint_rejects_a_body_with_no_date():
+    """422, the same as /api/route. The date is what keeps the scan on the sun
+    the map is drawing, and a default here would be the server guessing it.
+    """
+    body = day_body()
+    del body["date"]
+
+    assert TestClient(app).post("/api/day", json=body).status_code == 422

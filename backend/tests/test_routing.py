@@ -8,7 +8,15 @@ from pydantic import ValidationError
 from shapely.geometry import Point
 
 from backend.config import CRS, LAT, LON, today
-from backend.core.routing import MAX_ALPHA, edge_weights, route
+from backend.core.routing import (
+    MAX_ALPHA,
+    departures,
+    edge_weights,
+    graph_nodes,
+    nearest_node,
+    route,
+    snap,
+)
 from backend.main import RouteRequest
 
 # The three ways across the test graph, told apart by how shaded they are.
@@ -136,3 +144,142 @@ def test_request_model_requires_a_date_near_today():
     for far in (today() + dt.timedelta(days=400), today() - dt.timedelta(days=400)):
         with pytest.raises(ValidationError):
             RouteRequest(**here, date=far)
+
+
+# One day over the three ways, as (direct, north flank, south flank) shade.
+# Morning puts the shade on the long way round, which is the only time
+# detouring is worth anything; noon has none to find on any of them; dusk
+# shades the whole city at once, which is the real reason a shade curve peaks
+# at the end of the day and why the scan reports the direct route beside it.
+A_DAY = {
+    dt.time(8, 0): (0.10, 0.80, 0.00),
+    dt.time(12, 0): (0.05, 0.05, 0.00),
+    dt.time(18, 0): (1.00, 1.00, 1.00),
+}
+
+
+def a_day():
+    """The three ways, scored once per stamp -- what a day scan is handed.
+
+    Only the fractions differ between stamps. The geometry, the lengths and the
+    index belong to the graph, not to the hour, which is exactly the property
+    `departures` leans on when it searches the direct route once.
+    """
+    graph, scored, ends = three_ways()
+
+    def field(direct, north, south):
+        shade = {}
+        for (u, v), fraction in {
+            ("A", "C"): direct,
+            ("A", "N"): north, ("N", "C"): north,
+            ("A", "S"): south, ("S", "C"): south,
+        }.items():
+            shade[(u, v, 0)] = shade[(v, u, 0)] = fraction
+
+        stamp = scored.copy()
+        stamp["shade_fraction"] = [shade[key] for key in stamp.index]
+        return stamp
+
+    return graph, ends, {at: field(*values) for at, values in A_DAY.items()}
+
+
+def test_departures_answers_for_every_stamp_in_order():
+    graph, (origin, destination), day = a_day()
+
+    scan = departures(graph, day, origin, destination, 3.0)
+
+    assert [row["time"] for row in scan["departures"]] == ["08:00", "12:00", "18:00"]
+
+
+def test_departures_finds_the_hour_worth_leaving_at():
+    """The whole feature in one assertion: the same walk is a different walk
+    depending on when you start it, and the scan is what makes that visible.
+    """
+    graph, (origin, destination), day = a_day()
+
+    scan = departures(graph, day, origin, destination, 3.0)
+    shade = {row["time"]: row["shade_fraction"] for row in scan["departures"]}
+
+    # Morning detours onto the shaded flank; noon has nowhere better to go.
+    assert shade["08:00"] == pytest.approx(0.80)
+    assert shade["12:00"] == pytest.approx(0.05)
+    assert max(shade, key=shade.get) == "18:00"
+
+
+def test_departures_reports_one_direct_route_priced_at_every_stamp():
+    """At alpha 0 the weight is the edge's own length, and a length does not
+    depend on where the sun is -- so the direct path is one path all day. What
+    changes is how much of it happens to be shaded, which is the second line on
+    the chart and the reason the first one is worth reading: a shade curve
+    peaking at dusk is about the sun, not about the route.
+    """
+    graph, (origin, destination), day = a_day()
+
+    scan = departures(graph, day, origin, destination, 3.0)
+    rows = scan["departures"]
+
+    assert scan["baseline_distance_m"] == pytest.approx(DIRECT_M)
+    assert [row["baseline_shade_fraction"] for row in rows] == pytest.approx([0.10, 0.05, 1.00])
+    # Detouring buys 70 points in the morning and nothing at all by dusk.
+    gains = [row["shade_fraction"] - row["baseline_shade_fraction"] for row in rows]
+    assert gains == pytest.approx([0.70, 0.0, 0.0])
+
+
+def test_departures_detours_only_when_the_hour_pays_for_it():
+    """Noon and dusk are both walked the short way, for opposite reasons: at
+    noon there is no shade to reach, at dusk there is no shade to reach *for*.
+    """
+    graph, (origin, destination), day = a_day()
+
+    rows = departures(graph, day, origin, destination, 3.0)["departures"]
+    distance = {row["time"]: row["distance_m"] for row in rows}
+
+    assert distance["08:00"] > DIRECT_M
+    assert distance["12:00"] == pytest.approx(DIRECT_M)
+    assert distance["18:00"] == pytest.approx(DIRECT_M)
+
+
+def test_departures_follows_a_negative_alpha_into_the_sun():
+    """Sun-seeking is the winter product, and the scan has to answer for it
+    too: a chart that always recommended the shadiest hour would send somebody
+    who came looking for a warm walk out at dusk.
+    """
+    graph, (origin, destination), day = a_day()
+
+    rows = departures(graph, day, origin, destination, -3.0)["departures"]
+    shade = {row["time"]: row["shade_fraction"] for row in rows}
+
+    assert shade["08:00"] == pytest.approx(SUNLIT)   # detours onto the sunlit flank
+    assert min(shade, key=shade.get) == "08:00"
+
+
+def test_departures_rejects_two_clicks_on_one_corner():
+    """Raised once, before any stamp is planned. The cost of a scan is the
+    reason to check first: twenty-four searches is a poor way to find out that
+    there was never a walk to plan.
+    """
+    graph, _, day = a_day()
+    here = (LAT, LON)
+
+    with pytest.raises(ValueError, match="same street corner"):
+        departures(graph, day, here, here, 3.0)
+
+
+def test_snap_refuses_a_point_off_the_network():
+    """The bound that stops a click across town being answered with the nearest
+    corner of Astana. One degree of latitude is 111 km; MAX_SNAP_M is 300.
+    """
+    graph, _, _ = three_ways()
+
+    with pytest.raises(ValueError, match="from the nearest mapped"):
+        snap(graph_nodes(graph), LAT + 1.0, LON)
+
+
+def test_snap_is_the_same_answer_as_nearest_node():
+    """The refactor's invariant. nearest_node now builds the node frame and
+    hands it to snap; a caller that builds it once and snaps many times -- which
+    is every scan -- has to land on the same corner as one that does not.
+    """
+    graph, _, (origin, _) = three_ways()
+
+    assert snap(graph_nodes(graph), *origin) == nearest_node(graph, *origin)

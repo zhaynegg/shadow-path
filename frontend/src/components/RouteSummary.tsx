@@ -1,4 +1,6 @@
+import type { ReactNode } from 'react'
 import type { RoutePlan } from '../api/client'
+import { metres, percent } from '../lib/format'
 
 type RouteSummaryProp = {
     plan: RoutePlan | null,
@@ -8,10 +10,12 @@ type RouteSummaryProp = {
     // Signed, so this panel is the one place that knows whether the walk being
     // sold is the shady one or the sunny one. Everything below reads off it.
     alpha: number,
+    // The departure chart, which only makes sense once there is a walk to
+    // chart. Passed in rather than built here so this card stays what it
+    // has always been -- two routes and the difference between them -- and
+    // knows nothing about a second endpoint.
+    children?: ReactNode,
 }
-
-const percent = (fraction: number) => `${Math.round(fraction * 100)}%`
-const metres = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`)
 
 type RowProp = {
     label: string,
@@ -53,7 +57,7 @@ function Row({ label, leg, seekingSun, mark }: RowProp) {
     )
 }
 
-function RouteSummary({ plan, loading, error, pointCount, alpha }: RouteSummaryProp) {
+function RouteSummary({ plan, loading, error, pointCount, alpha, children }: RouteSummaryProp) {
     const seekingSun = alpha < 0
     const wanted = seekingSun ? 'sun' : 'shade'
     const found = seekingSun ? 'sunlit' : 'shaded'
@@ -111,6 +115,7 @@ function RouteSummary({ plan, loading, error, pointCount, alpha }: RouteSummaryP
                             </>
                         )}
                 </div>
+                {children}
             </>
         )
     }

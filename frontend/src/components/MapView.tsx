@@ -7,10 +7,11 @@ import TimeSlider from './controls/TimeSlider'
 import ShadeSlider from './controls/ShadeSlider'
 import SearchBox from './controls/SearchBox'
 import RouteSummary from './RouteSummary'
+import DeparturePlanner from './DeparturePlanner'
 import type { Place } from '../api/geocode'
 import {
-    fetchRoute, fetchShadowManifest,
-    type LatLon, type LineGeometry, type RoutePlan, type ShadowManifest,
+    fetchDayScan, fetchRoute, fetchShadowManifest,
+    type DayPlan, type LatLon, type LineGeometry, type RoutePlan, type ShadowManifest,
 } from '../api/client'
 import {
     WHOLE_HOURS, cityMinutes, isDaylight, nearestStamp, prettyDate, sliderTimes,
@@ -20,6 +21,10 @@ import { footprintAt } from '../lib/footprint'
 // What the backend last said, and which request it was saying it about. Either
 // a plan or a message, never both -- a failed request has no route to draw.
 type Answer = { key: string, plan?: RoutePlan, error?: string }
+
+// The same idea for the whole-day scan, tagged the same way and for the same
+// reason: a scan takes seconds, and the pins can move while it is running.
+type DayAnswer = { key: string, plan?: DayPlan, error?: string }
 
 const protocol = new Protocol({ metadata: true })
 
@@ -175,6 +180,12 @@ function MapView() {
     // clicks or the clock move underneath them.
     const [answer, setAnswer] = useState<Answer | null>(null)
 
+    // The day scan, and which walk the reader asked for one about. Two slots
+    // rather than one: a scan is two dozen searches, so it runs when it is
+    // asked for and not when the inputs happen to change.
+    const [dayAnswer, setDayAnswer] = useState<DayAnswer | null>(null)
+    const [scanKey, setScanKey] = useState<string | null>(null)
+
     const times = sliderTimes(manifest)
 
     // A searched point is one you have not seen yet, so the map has to go to
@@ -243,6 +254,16 @@ function MapView() {
     // one is computed, because blanking it on every step of the time slider
     // would flicker. It clears only when no walk is being asked about at all.
     const drawnPlan = requestKey ? answer?.plan ?? null : null
+
+    // The same walk, minus the clock. A scan spans the whole day, so moving the
+    // time slider does not invalidate one -- which is the point: the chart is
+    // what the reader moves the slider *by*.
+    const dayKey = manifest && points.length >= 2
+        ? JSON.stringify([points[0], points[1], manifest.date, alpha])
+        : null
+
+    const dayAnswered = dayAnswer?.key === dayKey ? dayAnswer : null
+    const scanning = scanKey !== null && scanKey === dayKey && dayAnswered === null
 
     // --- what the tiles are, before any of them can be drawn ---------------
     useEffect(() => {
@@ -326,6 +347,31 @@ function MapView() {
             controller.abort()
         }
     }, [requestKey, points, time, alpha, manifest])
+
+    // --- the whole day, when asked for it ----------------------------------
+    useEffect(() => {
+        // Only for the walk currently on screen. A scan started before the pins
+        // moved is an answer to a question nobody is asking any more, and the
+        // render above has already stopped showing it.
+        if (!scanKey || scanKey !== dayKey || !manifest || points.length < 2) return
+
+        const controller = new AbortController()
+
+        // No debounce: this runs because a button was pressed, not because a
+        // slider passed through a value on its way somewhere.
+        fetchDayScan(
+            {
+                origin: points[0], destination: points[1],
+                date: manifest.date, alpha,
+            },
+            controller.signal)
+            .then(result => setDayAnswer({ key: scanKey, plan: result }))
+            .catch((err: Error) => {
+                if (err.name !== 'AbortError') setDayAnswer({ key: scanKey, error: err.message })
+            })
+
+        return () => controller.abort()
+    }, [scanKey, dayKey, points, alpha, manifest])
 
     // --- draw whatever came back -------------------------------------------
     useEffect(() => {
@@ -578,7 +624,17 @@ function MapView() {
                 <SearchBox onPick={pickPlace} next={points.length === 1 ? 'destination' : 'start'} />
             </div>
 
-            <RouteSummary plan={plan} loading={loading} error={error} pointCount={points.length} alpha={alpha} />
+            <RouteSummary plan={plan} loading={loading} error={error}
+                pointCount={points.length} alpha={alpha}>
+                <DeparturePlanner
+                    day={dayAnswered?.plan ?? null}
+                    loading={scanning}
+                    error={dayAnswered?.error ?? null}
+                    alpha={alpha}
+                    time={time}
+                    onScan={() => setScanKey(dayKey)}
+                    onPick={setTime} />
+            </RouteSummary>
 
             <div className="panel dock">
                 <TimeSlider labels={times} value={Math.max(0, times.indexOf(time))}

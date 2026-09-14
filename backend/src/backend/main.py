@@ -15,10 +15,10 @@ from backend.config import CACHE_DIR, CRS, GRAPH_RADIUS, LAT, LON, TZ, today
 from backend.core import scores
 from backend.core.buildings import load_buildings
 from backend.core.graph import load_graph
-from backend.core.routing import MAX_ALPHA, plan
+from backend.core.routing import MAX_ALPHA, departures, plan
 from backend.core.scoring import score_edges, score_edges_layered
 from backend.core.shadows import MAX_SHADOW_M, layered_field
-from backend.core.solar import LOW_SUN_MINUTES, sun_position
+from backend.core.solar import LOW_SUN_MINUTES, daylight_times, sun_position
 from backend.core.trees import CANOPY_OPACITY, CANOPY_SOURCES, shading_geometry
 
 # The map draws shadows from precomputed tiles built by
@@ -38,7 +38,13 @@ MAX_DATE_DRIFT = dt.timedelta(days=366)
 SHADING_RADIUS = GRAPH_RADIUS + MAX_SHADOW_M
 
 
-class RouteRequest(BaseModel):
+class WalkRequest(BaseModel):
+    """Two ends, a day, and how much detour the walker will pay for.
+
+    Everything both endpoints need. /api/route adds the stamp it wants the walk
+    priced at; /api/day asks about all of them and so names none.
+    """
+
     origin: tuple[float, float]
     destination: tuple[float, float]
 
@@ -48,6 +54,21 @@ class RouteRequest(BaseModel):
     # by a sun nobody can see.
     date: dt.date
 
+    # Signed: positive routes towards shade, negative towards sun, 0 is the
+    # plain shortest path. Bounded on both sides rather than left open, because
+    # the bounds are also what rejects nan and inf -- either would sail through
+    # A* and come back as a route nobody asked for.
+    alpha: float = Field(3.0, ge=-MAX_ALPHA, le=MAX_ALPHA)
+
+    @field_validator("date")
+    @classmethod
+    def near_today(cls, value: dt.date) -> dt.date:
+        if abs(value - today()) > MAX_DATE_DRIFT:
+            raise ValueError(f"date must be within {MAX_DATE_DRIFT.days} days of today")
+        return value
+
+
+class RouteRequest(WalkRequest):
     hour: int = Field(12, ge=0, le=23)
 
     # Minutes past the hour, and only the ones a tileset can exist for. Low-sun
@@ -62,19 +83,6 @@ class RouteRequest(BaseModel):
     def on_a_step(cls, value: int) -> int:
         if value not in LOW_SUN_MINUTES:
             raise ValueError(f"minute must be one of {list(LOW_SUN_MINUTES)}")
-        return value
-
-    # Signed: positive routes towards shade, negative towards sun, 0 is the
-    # plain shortest path. Bounded on both sides rather than left open, because
-    # the bounds are also what rejects nan and inf -- either would sail through
-    # A* and come back as a route nobody asked for.
-    alpha: float = Field(3.0, ge=-MAX_ALPHA, le=MAX_ALPHA)
-
-    @field_validator("date")
-    @classmethod
-    def near_today(cls, value: dt.date) -> dt.date:
-        if abs(value - today()) > MAX_DATE_DRIFT:
-            raise ValueError(f"date must be within {MAX_DATE_DRIFT.days} days of today")
         return value
 
 def line_to_geojson(line, crs) -> dict:
@@ -99,6 +107,20 @@ def routing_buildings() -> gpd.GeoDataFrame:
 def graph():
     return load_graph(CACHE_DIR, GRAPH_RADIUS)
 
+@lru_cache(maxsize=1)
+def graph_edges() -> gpd.GeoDataFrame:
+    """The walking graph as a table of edges, geometry and all.
+
+    Held rather than rebuilt because it is a property of the graph alone -- no
+    date, no sun -- and building it is 0.6s for 153k edges. That was once a
+    cost per cache miss, which was one stamp; a day scan misses twenty-four
+    times on the first ask, and fifteen seconds of it would be this line.
+
+    Read-only, like routing_buildings. Both branches of scored_edges copy
+    before they write, which is what makes sharing it safe.
+    """
+    return ox.graph_to_gdfs(graph(), nodes=False)
+
 @lru_cache(maxsize=96)
 def scored_edges(date: dt.date, hour: int, minute: int):
     """The walking graph with every edge weighted by how shaded it is.
@@ -109,9 +131,10 @@ def scored_edges(date: dt.date, hour: int, minute: int):
 
     Sized for two days: a date runs to 29 stamps at midsummer, so 96 holds the
     longest two in the year and a rollover at midnight cannot evict the day
-    still being asked for.
+    still being asked for. That is also what makes /api/day cheap to ask twice
+    -- the second scan of a day is already in here, whole.
     """
-    edges = ox.graph_to_gdfs(graph(), nodes=False)
+    edges = graph_edges()
 
     # The nightly tile run already built this exact field and scored the graph
     # against it. Reading that back is the difference between half a minute and
@@ -155,3 +178,33 @@ def route_endpoint(request: RouteRequest) -> dict:
     for leg in result.values():
         leg["geometry"] = line_to_geojson(leg["geometry"], CRS)
     return result
+
+
+@app.post("/api/day")
+def day_endpoint(request: WalkRequest) -> dict:
+    """The same walk at every stamp of the day: when to leave, and what it buys.
+
+    The stamps come from daylight_times rather than from a window written down
+    here, because that is the function export_shadow_tiles.py cut the tiles and
+    the scores with -- so the scan covers exactly the times that have an answer
+    on disk, and night falls out of it without being special-cased.
+    """
+    times = daylight_times(LAT, LON, request.date, TZ)
+    if not times:
+        raise HTTPException(status_code=503,
+            detail="The sun does not rise over Astana on that date.")
+
+    # Checked up front, not discovered per stamp. Falling back to computing the
+    # field is the right answer for one missing stamp and the wrong one for
+    # twenty-four of them -- see scores.missing.
+    absent = scores.missing(CACHE_DIR, GRAPH_RADIUS, request.date, times)
+    if absent:
+        raise HTTPException(status_code=503,
+            detail=f"No precomputed scores for {len(absent)} of the {len(times)} stamps on "
+                   f"{request.date}. Run backend/scripts/export_shadow_tiles.py.")
+
+    scored = {at: scored_edges(request.date, at.hour, at.minute) for at in times}
+    try:
+        return departures(graph(), scored, request.origin, request.destination, request.alpha)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

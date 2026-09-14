@@ -19,6 +19,7 @@ against sun exposure.
 ```
  Browser (React + MapLibre)
    │  POST /api/route  {origin, destination, date, hour, alpha}
+   │  POST /api/day    {origin, destination, date, alpha} — all stamps at once
    │  (shadows are static .pmtiles, built ahead of time — see below)
    ▼
  FastAPI (uvicorn :8000)
@@ -368,6 +369,59 @@ POST /api/route
 GET /api/health
 ```
 
+```
+POST /api/day          the same walk at every stamp of one day
+{
+  "origin":      [lat, lon],
+  "destination": [lat, lon],
+  "date":        "2026-09-12",
+  "alpha":       6.0
+}
+→
+{
+  "baseline_distance_m": 3831,
+  "departures": [
+    { "time": "06:00", "distance_m": 3961,
+      "shade_fraction": 0.97, "baseline_shade_fraction": 0.94 },
+    ...one row per daylight stamp, ascending
+  ]
+}
+```
+
+`/api/day` is "when should I leave?", and it is the question a shadow map is
+uniquely able to answer. No stamp goes in — asking about all of them *is* the
+question — and no geometry comes back: the answer is a time, and once the reader
+picks one the map asks `/api/route` for that stamp the way it always did.
+
+It is close to free, but only because of `core/scores.py`. The nightly export
+already scores the whole graph for every stamp, so a scan is a parquet read and
+an A* per hour rather than twenty-four unions of the city. Two things had to
+move for that to be true:
+
+- **Snapping and the edge frame are built once, not per call.** They depend on
+  the graph alone, not on the sun. `nearest_node` was 0.36s of a 0.45s route
+  against A*'s 9ms, and `graph_to_gdfs` another 0.6s per cache miss — naively,
+  a day was ~21s of setup and 0.4s of searching. `/api/route` got the same
+  speedup for free: 0.9s → 0.24s.
+- **The direct route is searched once and priced twenty-four times.** At α = 0
+  the weight is the edge's own length, and a length does not depend on where the
+  sun is, so it is one path all day. What changes is how much of it happens to
+  be in shade.
+
+Measured on the 15 km graph: 134 ms a stamp, 4.6s for a cold September day and
+1.3s once `scored_edges` holds it.
+
+The scan declines with a 503 rather than falling back for a date with no
+precomputed scores. One missing stamp is a cache miss the API absorbs by
+computing the field itself; twenty-four of them is twelve minutes of one request
+holding the process, which is not a slow answer but an outage a caller can cause.
+
+Both curves come back because only the pair says anything. A shade curve alone
+peaks at dusk on every walk in the city — true, and a fact about the sun rather
+than about the route. Read against the direct path it says where detouring buys
+something, which is usually a different hour: on the walk above, 18:20 is 99%
+shaded and the direct route is 98% shaded, while 15:00 is 71% against 46%.
+
 `date` is sent by the client, not read from the server's clock, and so are
 `hour` and `minute`. All three come from the tile manifest, so the router
 weights streets by the same sun the map drew: if a nightly rebuild fails, both
@@ -416,7 +470,7 @@ backend/
     fetch_trees.py           cache OSM tree rows and points
     detect_trees.py          find canopy in Sentinel-2 (needs --group ml)
   src/backend/
-    main.py                  FastAPI app: /api/route, /api/health
+    main.py                  FastAPI app: /api/route, /api/day, /api/health
     config.py                paths, radius, timezone, city centre, today()
     core/
       graph.py               OSM walk network load + cache
@@ -427,17 +481,23 @@ backend/
       scoring.py             edge sub-segmentation + shade fraction
       scores.py              last night's shade per edge, so routing has
                              no geometry left to do at request time
-      routing.py             weighted A*, baseline route, stats
+      routing.py             weighted A*, baseline route, stats,
+                             and the whole-day departure scan
   tests/
     test_scoring.py, test_routing.py, test_api.py, test_buildings.py,
     test_scores.py
 
 frontend/src/
   api/client.ts              typed fetch; mirrors main.py and the tile manifest
+  lib/
+    stamps.ts                which stamps exist, and what time it is in the city
+    departures.ts            the day scan's chart maths and its recommendation
+    footprint.ts, format.ts
   components/
     MapView.tsx              map, shadow + building layers, routes, the clock
-    RouteSummary.tsx
-    controls/{TimeSlider,ShadeSlider}.tsx
+    RouteSummary.tsx         the two routes, and the difference between them
+    DeparturePlanner.tsx     shade against departure time, and when to leave
+    controls/{TimeSlider,ShadeSlider,SearchBox}.tsx
 
 .github/workflows/
   shadow-tiles.yml           nightly rebuild of the tiles for the current date

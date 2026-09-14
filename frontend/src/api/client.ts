@@ -71,21 +71,25 @@ export type RouteRequest = {
     alpha: number
 }
 
-export async function fetchRoute(request: RouteRequest, signal?: AbortSignal): Promise<RoutePlan> {
-    const response = await fetch('/api/route', {
+// One POST, one JSON answer, one way of reading a failure. Both endpoints take
+// the same shaped body and fail the same way, so the error handling lives here
+// rather than once per caller -- it is the part that is easy to get subtly
+// wrong and never notice, because a mishandled error still shows *something*.
+async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+    const response = await fetch(path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request),
+        body: JSON.stringify(body),
         signal,
     })
 
     if (!response.ok) {
         // FastAPI puts the reason in `detail` -- a plain string for the errors we
         // raise ourselves, a list of field problems for validation failures.
-        const body = await response.text()
-        let message = body.slice(0, 200)
+        const text = await response.text()
+        let message = text.slice(0, 200)
         try {
-            const detail = JSON.parse(body).detail
+            const detail = JSON.parse(text).detail
             if (typeof detail === 'string') message = detail
         } catch {
             // Not JSON. Keep the raw text.
@@ -93,5 +97,50 @@ export async function fetchRoute(request: RouteRequest, signal?: AbortSignal): P
         throw new Error(message)
     }
 
-    return response.json()
+    return response.json() as Promise<T>
+}
+
+export async function fetchRoute(request: RouteRequest, signal?: AbortSignal): Promise<RoutePlan> {
+    return post<RoutePlan>('/api/route', request, signal)
+}
+
+// --- the whole day at once -------------------------------------------------
+
+// One stamp's answer to "what if I left then?". No geometry: the answer is a
+// time, and once the reader picks one the map asks /api/route for that stamp
+// the way it always did. Two dozen polylines to draw one of them would be the
+// larger half of the payload and none of the point.
+export type Departure = {
+    // "HH:MM", and always a stamp the time slider can stop on -- the backend
+    // takes them from the same daylight_times that cut the tiles.
+    time: string
+    distance_m: number
+    shade_fraction: number
+    // The same hour's shade on the plain shortest path. The comparison is the
+    // product here as much as it is on a single route: a shade curve alone
+    // peaks at dusk on every walk in the city, which is a fact about the sun
+    // rather than about the route.
+    baseline_shade_fraction: number
+}
+
+// What POST /api/day returns: one row per daylight stamp, ascending.
+export type DayPlan = {
+    // Stated once because it is one number. The direct route is the same path
+    // at every hour -- at alpha 0 the weight is the edge's own length, and a
+    // length does not depend on where the sun is.
+    baseline_distance_m: number
+    departures: Departure[]
+}
+
+// RouteRequest without the stamp. The scan is the one call that names no time,
+// because asking about all of them is the question.
+export type DayRequest = {
+    origin: LatLon
+    destination: LatLon
+    date: string
+    alpha: number
+}
+
+export async function fetchDayScan(request: DayRequest, signal?: AbortSignal): Promise<DayPlan> {
+    return post<DayPlan>('/api/day', request, signal)
 }

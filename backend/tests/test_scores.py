@@ -108,3 +108,43 @@ def test_an_index_of_a_different_shape_is_a_miss(tmp_path):
     scores.save(frame(index(2), [0.5, 0.5]), tmp_path, RADIUS, DATE, AT)
 
     assert scores.load(tmp_path, RADIUS, DATE, AT, pd.RangeIndex(2)) is None
+
+
+def test_missing_names_the_stamps_with_no_file(tmp_path):
+    """What /api/day checks before it commits to twenty-four stamps.
+
+    One missing stamp is a cache miss the API absorbs by computing the field
+    itself. A day of them is twelve minutes of one request holding the process,
+    which is why the scan asks first rather than finding out per stamp.
+    """
+    idx = index(2)
+    present = [dt.time(6, 0), dt.time(7, 0)]
+    for at in present:
+        scores.save(frame(idx, [0.5, 0.5]), tmp_path, RADIUS, DATE, at)
+
+    asked = [*present, dt.time(8, 0), dt.time(9, 0)]
+
+    assert scores.missing(tmp_path, RADIUS, DATE, asked) == [dt.time(8, 0), dt.time(9, 0)]
+
+
+def test_missing_is_empty_when_every_stamp_is_there(tmp_path):
+    """The control: a check that always found something missing would pass the
+    test above and decline every scan on a perfectly warm cache.
+    """
+    idx = index(2)
+    asked = [dt.time(6, 0), dt.time(7, 0)]
+    for at in asked:
+        scores.save(frame(idx, [0.5, 0.5]), tmp_path, RADIUS, DATE, at)
+
+    assert scores.missing(tmp_path, RADIUS, DATE, asked) == []
+
+
+def test_missing_reads_the_same_radius_as_load(tmp_path):
+    """The edge index *is* the graph, and scores_dir keys on the radius for it.
+    A check that ignored the radius would wave through a day of files written
+    for a different disc, and every one of them would then miss on load.
+    """
+    idx = index(2)
+    scores.save(frame(idx, [0.5, 0.5]), tmp_path, RADIUS, DATE, AT)
+
+    assert scores.missing(tmp_path, RADIUS * 2, DATE, [AT]) == [AT]
