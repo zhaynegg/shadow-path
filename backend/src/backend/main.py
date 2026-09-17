@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field, field_validator
 
 from backend.config import CACHE_DIR, CRS, GRAPH_RADIUS, LAT, LON, TZ, today
 from backend.core import scores
-from backend.core.buildings import load_buildings
 from backend.core.day import Day, across_the_day, at_one_stamp
 from backend.core.graph import load_graph
 from backend.core.routing import (
@@ -24,26 +23,20 @@ from backend.core.routing import (
     minutes_past_midnight,
     plan,
 )
-from backend.core.scoring import score_edges, score_edges_layered
-from backend.core.shadows import MAX_SHADOW_M, layered_field
-from backend.core.solar import LOW_SUN_MINUTES, daylight_times, sun_position
-from backend.core.trees import CANOPY_OPACITY, CANOPY_SOURCES, shading_geometry
+from backend.core.solar import LOW_SUN_MINUTES, daylight_times
 
 # The map draws shadows from precomputed tiles built by
 # scripts/export_shadow_tiles.py, so nothing here serves them. What is left is
-# routing, which needs its own shadow field to weight the streets.
+# routing, which reads back the shade that same run scored the graph with.
+# Nothing here computes a shadow field any more -- see no_scores for what a
+# date the export has not covered gets instead.
 
 app = FastAPI()
 
-# How far from today a caller may ask for. Every distinct date is a fresh day of
-# scores and a fresh shadow field over the routing footprints, so an unbounded
-# range is an unbounded amount of work a caller can ask for. A year either side
-# covers any tiles the map could reasonably be showing.
+# How far from today a caller may ask for. A distinct date no longer costs a
+# citywide union -- a miss is a refusal now -- so this bounds tidiness rather
+# than load. A year either side covers any tiles the map could be showing.
 MAX_DATE_DRIFT = dt.timedelta(days=366)
-
-# Everything close enough to a routed street to shade it. One constant so the
-# buildings and the trees are clipped to the same disc.
-SHADING_RADIUS = GRAPH_RADIUS + MAX_SHADOW_M
 
 
 class WalkRequest(BaseModel):
@@ -98,20 +91,6 @@ def line_to_geojson(line, crs) -> dict:
     return json.loads(frame.to_json())["features"][0]["geometry"]
 
 @lru_cache(maxsize=1)
-def routing_buildings() -> gpd.GeoDataFrame:
-    """Only the footprints that can shade a street we route on.
-
-    The walking graph is a disc of GRAPH_RADIUS and MAX_SHADOW_M is the longest
-    shadow the model casts, so nothing further out can reach it. Scoring
-    intersects every edge against this field, and a city-wide one would be
-    thousands of times more geometry for no change in the answer.
-
-    Treat the result as read-only. It is the same object every time, so a
-    mutation here would leak into every later response.
-    """
-    return load_buildings(CACHE_DIR, SHADING_RADIUS)
-
-@lru_cache(maxsize=1)
 def graph():
     return load_graph(CACHE_DIR, GRAPH_RADIUS)
 
@@ -122,8 +101,8 @@ def graph_edges() -> gpd.GeoDataFrame:
     Held rather than rebuilt because it is a property of the graph alone -- no
     date, no sun -- and building it is 0.6s for 153k edges.
 
-    Read-only, like routing_buildings. Everything that writes a shade column
-    copies first, which is what makes sharing it safe.
+    Read-only. Everything that writes a shade column copies first, which is
+    what makes sharing it safe.
     """
     return ox.graph_to_gdfs(graph(), nodes=False)
 
@@ -173,51 +152,73 @@ def scored_day(date: dt.date) -> Day | None:
     return across_the_day(rows, times)
 
 @lru_cache(maxsize=96)
-def scored_edges(date: dt.date, hour: int, minute: int):
-    """One stamp's shade, computed from scratch -- the cold-checkout path.
+def scored_edges(date: dt.date, hour: int, minute: int) -> gpd.GeoDataFrame | None:
+    """One stamp's shade if the export wrote it, None if it did not.
 
-    Only reached when scored_day found nothing on disk. Keyed on the date as
-    well as the time, because 13:00 in June and 13:00 in December are different
-    suns and a time-only key would go on serving one for the other the first
-    time a rebuild rolled the map forward.
+    The narrow half of scored_day: a date missing some of its stamps can still
+    answer a single route, which needs only the one it departs in.
+
+    This used to compute the field itself on a miss -- the original
+    implementation, from when the graph was a 1.7 km disc and a union of the
+    city was cheap. At 15 km it is half a minute, and the key is
+    (date, hour, minute), all three caller-supplied: roughly 52,000 reachable
+    combinations against a cache of 96, so the caller chose when the server
+    spent it. A miss is a refusal now, and that branch is gone.
     """
+    at = dt.time(hour, minute)
+
+    # Stat the file before touching the graph, the way /api/day does. Without
+    # this a refusal first pulls 153k edges off disk -- 2.7s of precisely what
+    # the refusal exists to avoid, for a question the filesystem has already
+    # answered. Once per process rather than per request, but free is better.
+    if not scores.scores_path(CACHE_DIR, GRAPH_RADIUS, date, at).exists():
+        return None
+
     edges = graph_edges()
 
-    precomputed = scores.load(CACHE_DIR, GRAPH_RADIUS, date, dt.time(hour, minute), edges.index)
+    precomputed = scores.load(CACHE_DIR, GRAPH_RADIUS, date, at, edges.index)
     if precomputed is not None:
         ready = edges.copy()
         ready["shade_fraction"] = precomputed
         return ready
-
-    when = dt.datetime.combine(date, dt.time(hour, minute), tzinfo=TZ)
-    altitude, azimuth = sun_position(LAT, LON, when)
-    if altitude <= 0:
-        return score_edges(edges, None)
-
-    # Same frame the tiles were built from, so the route cannot be weighted by
-    # shade the map does not draw. Split in two on the way in: a crown is not a
-    # wall, and counting them alike called a tree-lined street as shaded as the
-    # north side of a tower.
-    casters = shading_geometry(routing_buildings(), date, CACHE_DIR, SHADING_RADIUS)
-    opaque, dappled = layered_field(
-        casters, altitude, azimuth, casters["height_source"].isin(CANOPY_SOURCES))
-    return score_edges_layered(edges, opaque, dappled, CANOPY_OPACITY)
+    return None
 
 
-def sun_over(date: dt.date, at: dt.time) -> Day:
-    """The day to plan against, degrading rather than failing without a cache.
+def sun_over(date: dt.date, at: dt.time) -> Day | None:
+    """The day to plan against, or None if the export has not covered it.
 
-    With the day on disk the walk is priced hour by hour as it is walked. With
-    nothing on disk it is priced end to end at the stamp it starts in, which is
-    a true answer to a slightly smaller question and is what this API answered
-    for its whole life before now.
+    Three outcomes, narrowing. The whole day on disk prices the walk hour by
+    hour as it is walked. Only the departure stamp prices it end to end at that
+    stamp -- a true answer to a slightly smaller question. Neither is a
+    refusal: the caller is told to run the export rather than made to wait
+    while the server does it for them.
     """
     whole = scored_day(date)
     if whole is not None:
         return whole
 
     one = scored_edges(date, at.hour, at.minute)
+    if one is None:
+        return None
     return at_one_stamp(one["shade_fraction"].to_numpy(), at)
+
+
+def no_scores(date: dt.date) -> HTTPException:
+    """Why this date cannot be answered, in a sentence the caller can act on.
+
+    Returned rather than raised, so the traceback starts at the endpoint that
+    declined. Both endpoints decline for the same two reasons, and only one of
+    them used to say which.
+    """
+    times = daylight_times(LAT, LON, date, TZ)
+    if not times:
+        return HTTPException(status_code=503,
+            detail="The sun does not rise over Astana on that date.")
+
+    absent = scores.missing(CACHE_DIR, GRAPH_RADIUS, date, times)
+    return HTTPException(status_code=503,
+        detail=f"No precomputed scores for {len(absent)} of the {len(times)} stamps on "
+               f"{date}. Run backend/scripts/export_shadow_tiles.py.")
 
 
 @app.get("/api/health")
@@ -228,8 +229,12 @@ def health():
 @app.post("/api/route")
 def route_endpoint(request: RouteRequest) -> dict:
     at = dt.time(request.hour, request.minute)
+    day = sun_over(request.date, at)
+    if day is None:
+        raise no_scores(request.date)
+
     try:
-        result = plan(streets(), sun_over(request.date, at),
+        result = plan(streets(), day,
             request.origin, request.destination, request.alpha, minutes_past_midnight(at))
     except ValueError as exc:
         # A bad pair of points is the caller's mistake, not a server fault.
@@ -244,21 +249,13 @@ def route_endpoint(request: RouteRequest) -> dict:
 def day_endpoint(request: WalkRequest) -> dict:
     """The same walk at every stamp of the day: when to leave, and what it buys.
 
-    Unlike /api/route this has no fallback. One stamp computed from scratch is
-    half a minute; a day of them is twelve minutes of one request holding the
-    process, which is not a slow answer but an outage a caller can cause.
+    Needs every stamp where /api/route needs one, so it declines more often --
+    but both decline rather than compute. A day built from scratch would be
+    twelve minutes of one request holding the process.
     """
     day = scored_day(request.date)
     if day is None:
-        times = daylight_times(LAT, LON, request.date, TZ)
-        if not times:
-            raise HTTPException(status_code=503,
-                detail="The sun does not rise over Astana on that date.")
-
-        absent = scores.missing(CACHE_DIR, GRAPH_RADIUS, request.date, times)
-        raise HTTPException(status_code=503,
-            detail=f"No precomputed scores for {len(absent)} of the {len(times)} stamps on "
-                   f"{request.date}. Run backend/scripts/export_shadow_tiles.py.")
+        raise no_scores(request.date)
 
     try:
         return departures(streets(), day, request.origin, request.destination, request.alpha)

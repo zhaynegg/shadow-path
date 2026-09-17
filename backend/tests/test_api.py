@@ -7,6 +7,7 @@ everything around that call: the bounds on the request, and the key the scored
 graph is memoised under.
 """
 import datetime as dt
+from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
@@ -149,108 +150,11 @@ def test_malformed_body_is_a_client_error():
     assert response.status_code == 422
 
 
-def test_scored_edges_keys_on_the_date_not_only_the_hour(monkeypatch):
-    """The bug this file exists for, and it never raised anything.
-
-    13:00 in June and 13:00 in December are different suns -- mean shade across
-    the walk network is 0.033 against 0.291. Keyed on the hour alone, the second
-    date is served the first one's weights, the routes stay plausible, and
-    nothing anywhere says the map rolled forward a day.
-
-    Everything expensive is replaced below so the function can actually be
-    called twice: a sun below the horizon takes the early return, and the graph
-    is never read once graph_to_gdfs is standing in for it.
-    """
-    seen: list[dt.datetime] = []
-
-    def fake_sun(lat, lon, when):
-        seen.append(when)
-        return -10.0, 0.0  # below the horizon: skips all the geometry
-
-    edges = gpd.GeoDataFrame(geometry=[LineString([(0, 0), (100, 0)])], crs=CRS)
-
-    monkeypatch.setattr(main, "sun_position", fake_sun)
-    monkeypatch.setattr(main, "graph", lambda: None)
-    # Patched on the osmnx module as main.py sees it; monkeypatch puts it back.
-    monkeypatch.setattr(main.ox, "graph_to_gdfs", lambda graph, nodes: edges)
-
-    # lru_cache outlives the test that filled it. Without this the assertions
-    # below read whatever an earlier run left in there.
-    clear_caches()
-
-    june = dt.date(today().year, 6, 21)
-    december = dt.date(today().year, 12, 21)
-    main.scored_edges(june, 13, 0)
-    main.scored_edges(december, 13, 0)
-
-    assert [when.date() for when in seen] == [june, december]
-
-    clear_caches()
-
-
-def test_scored_edges_reuses_the_same_date_and_time(monkeypatch):
-    """The other half: the cache has to actually cache, or every request
-    recomputes a citywide polygon union and the whole quantise-by-hour decision
-    buys nothing.
-    """
-    seen: list[dt.datetime] = []
-
-    def fake_sun(lat, lon, when):
-        seen.append(when)
-        return -10.0, 0.0
-
-    edges = gpd.GeoDataFrame(geometry=[LineString([(0, 0), (100, 0)])], crs=CRS)
-
-    monkeypatch.setattr(main, "sun_position", fake_sun)
-    monkeypatch.setattr(main, "graph", lambda: None)
-    monkeypatch.setattr(main.ox, "graph_to_gdfs", lambda graph, nodes: edges)
-    # This test counts sun_position calls, so it is about the path that
-    # computes the field. Whether a developer has run export_shadow_tiles.py
-    # must not decide which branch runs -- without this, the assertion below
-    # passes on a cold checkout and fails on a warm one.
-    monkeypatch.setattr(main.scores, "load", lambda *args, **kwargs: None)
-    clear_caches()
-
-    main.scored_edges(today(), 13, 0)
-    main.scored_edges(today(), 13, 0)
-
-    assert len(seen) == 1
-
-    clear_caches()
-
-
-def test_scored_edges_keys_on_the_minute_too(monkeypatch):
-    """The same bug one level down, and it would look even more plausible.
-
-    Low-sun hours are cut into thirds because an hour is too coarse a step
-    there -- at 17:00 an hour redraws 59% of the network. Drop the minute from
-    the key and 17:40 is served 17:00's weights, which is precisely the error
-    the split exists to remove, back again and invisible.
-    """
-    seen: list[dt.datetime] = []
-
-    def fake_sun(lat, lon, when):
-        seen.append(when)
-        return -10.0, 0.0
-
-    edges = gpd.GeoDataFrame(geometry=[LineString([(0, 0), (100, 0)])], crs=CRS)
-
-    monkeypatch.setattr(main, "sun_position", fake_sun)
-    monkeypatch.setattr(main, "graph", lambda: None)
-    monkeypatch.setattr(main.ox, "graph_to_gdfs", lambda graph, nodes: edges)
-    # This test counts sun_position calls, so it is about the path that
-    # computes the field. Whether a developer has run export_shadow_tiles.py
-    # must not decide which branch runs -- without this, the assertion below
-    # passes on a cold checkout and fails on a warm one.
-    monkeypatch.setattr(main.scores, "load", lambda *args, **kwargs: None)
-    clear_caches()
-
-    for minute in (0, 20, 40):
-        main.scored_edges(today(), 17, minute)
-
-    assert [when.minute for when in seen] == [0, 20, 40]
-
-    clear_caches()
+# The three tests that lived here drove scored_edges' compute branch: that it
+# keyed on the date, on the minute, and that the cache held. That branch is
+# gone, and with it the bug class -- a wrong sun served from a stale key. The
+# same risk now sits one layer down, in the filename scores.load builds, where
+# test_scores.py::test_another_date_is_not_borrowed already holds it.
 
 
 @pytest.mark.parametrize("minute", [1, 10, 30, 59, -1])
@@ -316,6 +220,15 @@ def test_day_endpoint_rejects_a_body_with_no_date():
     assert TestClient(app).post("/api/day", json=body).status_code == 422
 
 
+def route_body(**overrides) -> dict:
+    """A /api/route body, JSON-ready.
+
+    valid_request builds kwargs for the model, where a date object is what the
+    validators want. This one crosses the wire, where it has to be a string.
+    """
+    return valid_request(**overrides) | {"date": valid_request()["date"].isoformat()}
+
+
 def a_day(edges: int = 1):
     """The smallest thing the router will accept as a date's worth of sun."""
     return at_one_stamp(np.full(edges, 0.5, dtype="float32"), dt.time(12, 0))
@@ -375,10 +288,10 @@ def test_day_endpoint_declines_before_it_reaches_the_graph(monkeypatch):
     """The guard that makes a scan safe to offer at all, and it has to be the
     cheap half that runs first.
 
-    One missing stamp is a cache miss /api/route absorbs by computing the field
-    itself -- half a minute, and correct. Twenty-four of them is twelve minutes
-    of one request holding the process. Statting the files costs nothing;
-    loading 153k edges to reach the same conclusion does not.
+    One missing stamp is a miss /api/route can still answer around, needing
+    only the stamp it departs in. Twenty-four of them is a day nobody can
+    answer. Either way the check has to be the cheap half: statting the files
+    costs nothing; loading 153k edges to reach the same conclusion does not.
     """
     def no_graph():
         raise AssertionError("the scan must decline before it reaches the graph")
@@ -419,10 +332,11 @@ def test_day_endpoint_passes_the_signed_alpha_through(monkeypatch):
 
 
 def test_route_falls_back_to_one_stamp_without_a_cached_day(monkeypatch):
-    """A checkout that has never run the export still routes -- at the sun it
-    sets off under, end to end, which is what this API answered for its whole
-    life before it could follow a clock. The scan has no such fallback; a
-    single route does, because a single route can afford one field.
+    """A date missing some of its stamps still routes at the one it departs in.
+
+    The narrower of the two reads, and why /api/route declines less often than
+    /api/day: a single route can be priced from a single stamp. What it no
+    longer does is build that stamp when it is absent -- see the test below.
     """
     edges = gpd.GeoDataFrame(
         {"shade_fraction": [0.4]}, geometry=[LineString([(0, 0), (100, 0)])], crs=CRS)
@@ -432,5 +346,53 @@ def test_route_falls_back_to_one_stamp_without_a_cached_day(monkeypatch):
 
     day = main.sun_over(today(), dt.time(13, 0))
 
+    assert day is not None
     assert not day.crosses_stamps
     assert day.shade.tolist() == [[pytest.approx(0.4)]]
+
+
+def test_route_declines_a_stamp_the_export_never_wrote(monkeypatch):
+    """The cold path, closed.
+
+    This used to compute the field itself: half a minute of one request, on a
+    key -- date, hour, minute -- the caller picked, with about 52,000 of them
+    reachable against a cache of 96. So the caller decided when the server
+    spent half a minute, which is the whole of the problem. It now refuses and
+    names the script, the way /api/day always has.
+
+    The graph stands in as a tripwire: declining has to happen before the
+    expensive half, or the refusal costs what it was meant to avoid. Note that
+    scored_edges is the real one here. Stubbing it out would step straight over
+    the line under test -- the stat that has to come before the load.
+    """
+    def no_graph(*args, **kwargs):
+        raise AssertionError("a declined route must not reach the graph")
+
+    monkeypatch.setattr(main, "scored_day", lambda date: None)
+    monkeypatch.setattr(main.scores, "scores_path",
+                        lambda cache, radius, date, at: Path("no-such-stamp.parquet"))
+    monkeypatch.setattr(main, "graph", no_graph)
+    monkeypatch.setattr(main, "graph_edges", no_graph)
+    monkeypatch.setattr(main.scores, "missing", lambda *args: [dt.time(6, 0)])
+    clear_caches()
+
+    response = TestClient(app).post("/api/route", json=route_body())
+
+    assert response.status_code == 503
+    assert "export_shadow_tiles.py" in response.json()["detail"]
+
+    clear_caches()
+
+
+def test_a_date_with_no_daylight_is_told_why_rather_than_sent_to_the_script(monkeypatch):
+    """Astana never sees this, but both endpoints decline through one helper
+    now, and the two reasons it declines for are not the same thing. Missing
+    scores is something a developer fixes by running the export. A sun that
+    never rises is not, and sending them to the script would be a lie.
+    """
+    monkeypatch.setattr(main, "daylight_times", lambda *args: [])
+
+    detail = main.no_scores(today()).detail
+
+    assert "does not rise" in detail
+    assert "export_shadow_tiles.py" not in detail
