@@ -94,17 +94,32 @@ def line_to_geojson(line, crs) -> dict:
 def graph():
     return load_graph(CACHE_DIR, GRAPH_RADIUS)
 
+# What routing reads off an edge. osmnx hands back sixteen columns; flatten
+# takes length and the (u, v, key) index, scoring and the GeoJSON take the
+# geometry, and nothing anywhere reads the other thirteen. Direction is already
+# in the index -- the graph is directed, so a one-way is one edge, not a flag --
+# which is why dropping `oneway` and `reversed` costs nothing.
+ROUTING_COLUMNS = ["length", "geometry"]
+
+
 @lru_cache(maxsize=1)
 def graph_edges() -> gpd.GeoDataFrame:
-    """The walking graph as a table of edges, geometry and all.
+    """The walking graph as a table of edges: length, geometry, and the index.
 
     Held rather than rebuilt because it is a property of the graph alone -- no
     date, no sun -- and building it is 0.6s for 153k edges.
 
+    Trimmed to ROUTING_COLUMNS on the way out, which is 55 MB down to 4.7 MB.
+    The frame itself is the smaller half of that: scored_edges copies it per
+    cached stamp, and a copy is shallow for object columns -- it duplicates the
+    pointers, not the strings -- so thirteen unread columns cost 8.35 MB per
+    entry against 0.23 MB trimmed. Across a full cache that is 800 MB of
+    street names nothing reads.
+
     Read-only. Everything that writes a shade column copies first, which is
     what makes sharing it safe.
     """
-    return ox.graph_to_gdfs(graph(), nodes=False)
+    return ox.graph_to_gdfs(graph(), nodes=False)[ROUTING_COLUMNS]
 
 @lru_cache(maxsize=1)
 def streets():
