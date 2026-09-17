@@ -155,6 +155,56 @@ def write_manifest(out_dir: Path, date: dt.date, times: list[dt.time]) -> Path:
     return path
 
 
+def finalise(args, written: dict[dt.time, Path], scored: bool) -> None:
+    """Everything after the last stamp: drop what is stale, publish what is new.
+
+    Lifted out of main because the order of these steps is the whole of their
+    correctness, and an order is only testable if there is something to call.
+    `scored` is whether this run wrote any -- main knows it as `edges`, which
+    is None when --no-scores meant the graph was never read.
+    """
+    # A rebuild can leave behind stamps the new date has no sun for, or, after
+    # a change to daylight_times, ones it no longer cuts the hour finely enough
+    # to want. They would ship as dead weight and, worse, still answer when the
+    # map asked. Guarded, because a --scores-only run cut no tiles and would
+    # otherwise read its own empty `written` as "every tileset is stale".
+    if not args.scores_only:
+        for stale in sorted(set(args.out_dir.glob("*.pmtiles")) - set(written.values())):
+            stale.unlink()
+            print(f"  {stale.name}  stale, removed")
+
+    times = sorted(written)
+    if not args.scores_only:
+        write_manifest(args.out_dir, args.date, times)
+        total = sum(p.stat().st_size for p in args.out_dir.glob("*.pmtiles")) / 1e6
+        span = f"{times[0]:%H:%M}-{times[-1]:%H:%M}" if times else "none"
+        print(f"\n{len(times)} tilesets, {span}, {total:.1f} MB total, in {args.out_dir}")
+
+    # Scores for a date nobody will ask about again -- pruned after the
+    # manifest, never before it. The map asks for the date the manifest names,
+    # so pruning first opens a window where the manifest still names yesterday
+    # and yesterday's scores are already gone: every request landing in it gets
+    # a 503, and a crash anywhere inside it leaves the checkout that way.
+    # Pruning second means the window holds both dates instead of neither.
+    #
+    # And only in the mode that wrote one. --scores-only leaves the manifest
+    # naming whatever the last full run built, so pruning there would delete
+    # the scores for the date the map is still asking about and leave the
+    # checkout that way -- the same window, but permanent rather than momentary.
+    # Scores accumulating until the next full run is the cheaper mistake.
+    if scored and not args.scores_only:
+        for old in scores.prune(args.cache_dir, GRAPH_RADIUS, args.date):
+            print(f"  {old.name}  stale scores, removed")
+
+    if scored:
+        scored_dir = scores.scores_dir(args.cache_dir, GRAPH_RADIUS, args.date)
+        scored_mb = sum(f.stat().st_size for f in scored_dir.glob("*.parquet")) / 1e6
+        print(f"routing scores: {scored_mb:.1f} MB in {scored_dir}")
+
+    if not args.scores_only:
+        print(f"{MANIFEST} written for {args.date}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
@@ -221,34 +271,7 @@ def main() -> None:
 
             print(f"  {at:%H:%M}{note}  {time.time() - start:5.1f}s")
 
-    # A rebuild can leave behind stamps the new date has no sun for, or, after
-    # a change to daylight_times, ones it no longer cuts the hour finely enough
-    # to want. They would ship as dead weight and, worse, still answer when the
-    # map asked. Guarded, because a --scores-only run cut no tiles and would
-    # otherwise read its own empty `written` as "every tileset is stale".
-    if not args.scores_only:
-        for stale in sorted(set(args.out_dir.glob("*.pmtiles")) - set(written.values())):
-            stale.unlink()
-            print(f"  {stale.name}  stale, removed")
-
-    # Scores for a date nobody will ask about again. The map sends the date it
-    # is showing, and that comes from the manifest written just below.
-    if edges is not None:
-        for old in scores.prune(args.cache_dir, GRAPH_RADIUS, args.date):
-            print(f"  {old.name}  stale scores, removed")
-
-    times = sorted(written)
-    if not args.scores_only:
-        write_manifest(args.out_dir, args.date, times)
-        total = sum(p.stat().st_size for p in args.out_dir.glob("*.pmtiles")) / 1e6
-        span = f"{times[0]:%H:%M}-{times[-1]:%H:%M}" if times else "none"
-        print(f"\n{len(times)} tilesets, {span}, {total:.1f} MB total, in {args.out_dir}")
-    if edges is not None:
-        scored_dir = scores.scores_dir(args.cache_dir, GRAPH_RADIUS, args.date)
-        scored_mb = sum(f.stat().st_size for f in scored_dir.glob("*.parquet")) / 1e6
-        print(f"routing scores: {scored_mb:.1f} MB in {scored_dir}")
-    if not args.scores_only:
-        print(f"{MANIFEST} written for {args.date}")
+    finalise(args, written, edges is not None)
 
 
 if __name__ == "__main__":
