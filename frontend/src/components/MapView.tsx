@@ -515,12 +515,30 @@ function MapView() {
         return () => markers.forEach(marker => marker.remove())
     }, [points])
 
-    // --- build the map once the manifest says what to build ----------------
+    // --- build the map once it is known what to build --------------------
     useEffect(() => {
-        // The shadow sources are part of the style, and the style is built once.
-        // Waiting costs one small same-origin fetch; guessing costs a map that
-        // asks for tilesets the current date has no sun for.
-        if (!containerRef.current || !manifest) return
+        // The shadow sources are part of the style, and the style is built
+        // once, so this waits to be told what stamps exist. Waiting costs one
+        // small same-origin fetch; guessing costs a map that asks for tilesets
+        // the current date has no sun for.
+        //
+        // It waits for an *answer*, though, not for success. A failed manifest
+        // used to leave this effect returning forever, and with it the whole
+        // map: no basemap, no buildings, no city -- a blank page whose only
+        // content was a sentence about a missing file. That is the state a
+        // failed nightly build leaves the live site in, and a map of Astana
+        // with no shadows on it is worth far more than nothing.
+        if (!containerRef.current || (!manifest && !manifestError)) return
+
+        // Empty when the manifest never arrived: no sources, no layers, and
+        // the clock below finds no stamp to show -- which is the same code
+        // path as a night-time hour, already handled everywhere downstream.
+        const stamps = manifest?.times ?? []
+
+        // Only ever read inside the loop over `stamps`, which is empty in
+        // exactly the case this fallback covers -- it is here so the type says
+        // what the code already guarantees.
+        const tileLayer = manifest?.layer ?? ''
 
         const map = new maplibregl.Map({
             container: containerRef.current,
@@ -534,7 +552,7 @@ function MapView() {
                     // Shadows are tiles like the basemap, not a query: the
                     // browser pulls only the ones on screen, and they are
                     // already drawn when you arrive.
-                    ...Object.fromEntries(manifest.times.map(stamp => [
+                    ...Object.fromEntries(stamps.map(stamp => [
                         shadowSource(stamp),
                         {
                             type: 'vector' as const,
@@ -552,13 +570,13 @@ function MapView() {
                     ...layers('protomaps', GRAYSCALE)
                         .filter(layer => layer.id !== 'buildings')
                         .map(blueWater),
-                    ...manifest.times.map(stamp => ({
+                    ...stamps.map(stamp => ({
                         id: shadowLayer(stamp),
                         type: 'fill' as const,
                         source: shadowSource(stamp),
                         // The layer name inside the tilesets, set by --layer in
                         // the export script that also wrote this manifest.
-                        'source-layer': manifest.layer,
+                        'source-layer': tileLayer,
                         layout: {
                             visibility: (stamp === initialTimeRef.current ? 'visible' : 'none') as 'visible' | 'none',
                         },
@@ -656,7 +674,8 @@ function MapView() {
             map.remove()
             mapRef.current = null
         }
-    }, [manifest]) // Runs once: the manifest is fetched once and never refetched.
+    // Runs once: the manifest is fetched once, and neither outcome changes after.
+    }, [manifest, manifestError])
 
     return (
         <div className="app">

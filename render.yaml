@@ -63,12 +63,16 @@ services:
       npm ci
       npm run build
       # The tiles are a third of a gigabyte and rebuilt nightly, so they are
-      # not in the repo. Unlike the scores above this IS fatal: a map with no
-      # shadow tiles looks broken rather than degraded, and a build that stops
-      # with this message is easier to understand than a grey city.
-      curl -fsSL "$RUNTIME_ASSETS_URL/shadows.tar.gz" -o /tmp/shadows.tar.gz
-      mkdir -p dist/shadows
-      tar -xzf /tmp/shadows.tar.gz -C dist/shadows
+      # not in the repo. Not fatal if they are missing: MapView builds the map
+      # on an answer rather than on success, so a site without them is Astana
+      # with no shadows on it and a note saying why -- which is what the very
+      # first deploy looks like, until that night's run publishes. It used to
+      # stop the build here, on the theory that a shadowless map looks broken;
+      # the map was blank without a manifest at the time, so that was true.
+      curl -fsSL "$RUNTIME_ASSETS_URL/shadows.tar.gz" -o /tmp/shadows.tar.gz \
+        && mkdir -p dist/shadows \
+        && tar -xzf /tmp/shadows.tar.gz -C dist/shadows \
+        || echo "WARNING: no shadow tiles fetched -- the map will draw without them until the nightly run publishes" 
     envVars:
       - key: RUNTIME_ASSETS_URL
         value: https://github.com/zhaynegg/shadow-path/releases/download/tiles-latest
