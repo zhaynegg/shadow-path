@@ -79,8 +79,32 @@ def clock_table(times: list[dt.time]) -> np.ndarray:
     return table
 
 
+def empty_shade(times: list[dt.time], edges: int) -> np.ndarray:
+    """The day's table, allocated once, with the night row already written.
+
+    For a caller that reads the stamps one at a time off disk. Building the
+    same table by collecting the rows and stacking them costs three copies of
+    the whole day at once -- the list, `asarray`, then `vstack` -- and the day
+    is 14 MB on the 15 km graph. Filling a row at a time costs one.
+    """
+    shade = np.empty((len(times) + 1, edges), dtype="float32")
+    shade[-1] = NIGHT_SHADE
+    return shade
+
+
+def day_of(shade: np.ndarray, times: list[dt.time]) -> Day:
+    """A filled table and its stamps, as the thing the router walks over."""
+    if not times:
+        raise ValueError("a day with no daylight in it cannot be walked through")
+    return Day(times=tuple(times), shade=shade, stamp_of_minute=clock_table(times))
+
+
 def across_the_day(rows: list[np.ndarray], times: list[dt.time]) -> Day:
-    """A day of stamps, with night underneath them."""
+    """A day of stamps, with night underneath them.
+
+    The collect-then-stack form, kept for callers that already hold every row
+    -- the tile export scores them in memory rather than reading them back.
+    """
     if not times:
         raise ValueError("a day with no daylight in it cannot be walked through")
 

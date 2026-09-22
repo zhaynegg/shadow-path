@@ -7,18 +7,18 @@ import json
 from functools import lru_cache
 
 import geopandas as gpd
-import osmnx as ox
+import numpy as np
+import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from backend.config import CACHE_DIR, CRS, GRAPH_RADIUS, LAT, LON, TZ, today
 from backend.core import scores
-from backend.core.day import Day, across_the_day, at_one_stamp
-from backend.core.graph import load_graph
+from backend.core import streets as street_tables
+from backend.core.day import Day, at_one_stamp, day_of, empty_shade
 from backend.core.routing import (
     MAX_ALPHA,
     departures,
-    graph_nodes,
     lay_out,
     minutes_past_midnight,
     plan,
@@ -91,44 +91,29 @@ def line_to_geojson(line, crs) -> dict:
     return json.loads(frame.to_json())["features"][0]["geometry"]
 
 @lru_cache(maxsize=1)
-def graph():
-    return load_graph(CACHE_DIR, GRAPH_RADIUS)
+def graph_edges() -> pd.DataFrame:
+    """The walk network as a table of edges: length, geometry, and the index.
 
-# What routing reads off an edge. osmnx hands back sixteen columns; flatten
-# takes length and the (u, v, key) index, scoring and the GeoJSON take the
-# geometry, and nothing anywhere reads the other thirteen. Direction is already
-# in the index -- the graph is directed, so a one-way is one edge, not a flag --
-# which is why dropping `oneway` and `reversed` costs nothing.
-ROUTING_COLUMNS = ["length", "geometry"]
+    Read straight off disk rather than derived from a graph. This used to be
+    `ox.graph_to_gdfs(load_graphml(...))`, which is the same 153k rows by way of
+    a networkx MultiDiGraph costing 887 MB to build and 226 MB of osmnx to
+    import -- against a 512 MB server. The graph is still what scripts/ work
+    from; core/streets.py records what it reduces to.
 
-
-@lru_cache(maxsize=1)
-def graph_edges() -> gpd.GeoDataFrame:
-    """The walking graph as a table of edges: length, geometry, and the index.
-
-    Held rather than rebuilt because it is a property of the graph alone -- no
-    date, no sun -- and building it is 0.6s for 153k edges.
-
-    Trimmed to ROUTING_COLUMNS on the way out, which is 55 MB down to 4.7 MB.
-    The frame itself is the smaller half of that: scored_edges copies it per
-    cached stamp, and a copy is shallow for object columns -- it duplicates the
-    pointers, not the strings -- so thirteen unread columns cost 8.35 MB per
-    entry against 0.23 MB trimmed. Across a full cache that is 800 MB of
-    street names nothing reads.
-
-    Read-only. Everything that writes a shade column copies first, which is
-    what makes sharing it safe.
+    Held rather than re-read because it is a property of the network alone --
+    no date, no sun. Read-only: everything that writes a shade column copies
+    first, which is what makes sharing it safe.
     """
-    return ox.graph_to_gdfs(graph(), nodes=False)[ROUTING_COLUMNS]
+    return street_tables.load(CACHE_DIR, GRAPH_RADIUS)[0]
 
 @lru_cache(maxsize=1)
 def streets():
     """The walk network in the three shapes the router needs it in.
 
-    Flattening 153k edges into adjacency arrays takes about 0.2s and depends on
-    nothing but the graph, so it happens once for the life of the process.
+    Flattening 153k edges into adjacency arrays takes about a second and
+    depends on nothing but the tables, so it happens once per process.
     """
-    return lay_out(graph_edges(), graph_nodes(graph()))
+    return lay_out(*street_tables.load(CACHE_DIR, GRAPH_RADIUS))
 
 @lru_cache(maxsize=2)
 def scored_day(date: dt.date) -> Day | None:
@@ -155,19 +140,24 @@ def scored_day(date: dt.date) -> Day | None:
         return None
 
     edges = graph_edges()
-    rows = []
-    for at in times:
+
+    # Allocated once and filled a stamp at a time. Collecting the rows and
+    # stacking them afterwards holds three copies of the day at the moment of
+    # stacking, and on a 512 MB box the peak is the number that matters -- a
+    # container is killed for what it touched, not for what it kept.
+    shade = empty_shade(times, len(edges))
+    for row, at in enumerate(times):
         got = scores.load(CACHE_DIR, GRAPH_RADIUS, date, at, edges.index)
         # All of it or none. A day with a hole in it would route a walk through
         # the hole as though those streets were in full sun.
         if got is None:
             return None
-        rows.append(got.to_numpy(dtype="float32"))
+        shade[row] = got.to_numpy(dtype="float32")
 
-    return across_the_day(rows, times)
+    return day_of(shade, times)
 
-@lru_cache(maxsize=96)
-def scored_edges(date: dt.date, hour: int, minute: int) -> gpd.GeoDataFrame | None:
+@lru_cache(maxsize=24)
+def scored_edges(date: dt.date, hour: int, minute: int) -> np.ndarray | None:
     """One stamp's shade if the export wrote it, None if it did not.
 
     The narrow half of scored_day: a date missing some of its stamps can still
@@ -179,6 +169,12 @@ def scored_edges(date: dt.date, hour: int, minute: int) -> gpd.GeoDataFrame | No
     (date, hour, minute), all three caller-supplied: roughly 52,000 reachable
     combinations against a cache of 96, so the caller chose when the server
     spent it. A miss is a refusal now, and that branch is gone.
+
+    Returns the bare column. It used to hand back a copy of the edge frame with
+    a shade column welded on, and its only caller then threw everything but the
+    column away -- 2.5 MB of duplicated geometry pointers per cached stamp,
+    against 0.6 MB for the numbers. At 96 entries that was a quarter of the
+    server held in copies of one frame. 24 is as many stamps as a date has.
     """
     at = dt.time(hour, minute)
 
@@ -192,11 +188,9 @@ def scored_edges(date: dt.date, hour: int, minute: int) -> gpd.GeoDataFrame | No
     edges = graph_edges()
 
     precomputed = scores.load(CACHE_DIR, GRAPH_RADIUS, date, at, edges.index)
-    if precomputed is not None:
-        ready = edges.copy()
-        ready["shade_fraction"] = precomputed
-        return ready
-    return None
+    if precomputed is None:
+        return None
+    return precomputed.to_numpy(dtype="float32")
 
 
 def sun_over(date: dt.date, at: dt.time) -> Day | None:
@@ -215,7 +209,7 @@ def sun_over(date: dt.date, at: dt.time) -> Day | None:
     one = scored_edges(date, at.hour, at.minute)
     if one is None:
         return None
-    return at_one_stamp(one["shade_fraction"].to_numpy(), at)
+    return at_one_stamp(one, at)
 
 
 def no_scores(date: dt.date) -> HTTPException:

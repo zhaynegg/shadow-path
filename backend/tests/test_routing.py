@@ -13,6 +13,7 @@ from shapely.geometry import Point
 from backend.config import CRS, LAT, LON, today
 from backend.core import search
 from backend.core.day import across_the_day, at_one_stamp
+from backend.core.graph import graph_nodes, nearest_node
 from backend.core.routing import (
     MAX_ALPHA,
     MINUTES_PER_M,
@@ -20,16 +21,15 @@ from backend.core.routing import (
     departures,
     edge_weights,
     endpoints,
-    graph_nodes,
     lay_out,
     measure,
     minutes_past_midnight,
-    nearest_node,
     plan,
     restamp,
     shortest,
     snap,
 )
+from backend.core.streets import flatten_shapes
 from backend.main import RouteRequest
 
 # The three ways across the test graph, told apart by how shaded they are.
@@ -58,7 +58,10 @@ def street_grid(coords, streets):
         graph.add_edge(v, u, 0, length=span)
 
     edges = ox.graph_to_gdfs(graph, nodes=False)
-    city = lay_out(edges, ox.graph_to_gdfs(graph, edges=False))
+    # The shapes travel beside the table rather than in it -- see
+    # core/streets.Shapes -- so a Streets is built from three things now.
+    city = lay_out(edges, ox.graph_to_gdfs(graph, edges=False),
+                   flatten_shapes(edges["geometry"].to_numpy()))
 
     def where(name):
         point = gpd.GeoSeries(

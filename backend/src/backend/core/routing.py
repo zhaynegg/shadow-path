@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 import geopandas as gpd
 import numpy as np
-import osmnx as ox
+import pandas as pd
 import shapely
 from shapely.geometry import Point
 
@@ -69,19 +69,19 @@ class Streets:
     """
 
     network: search.Network
-    # Points, for snapping a click to a corner.
-    nodes: gpd.GeoDataFrame
-    # Lines, for turning a list of edge numbers back into something to draw.
-    edges: gpd.GeoDataFrame
+    # Where the junctions are -- x and y, not geometry. `snap` measures to a
+    # point, and two float columns do that faster than 52,772 shapely Points.
+    nodes: pd.DataFrame
+    # Lengths and the (u, v, key) index, which is what the scores align to.
+    edges: pd.DataFrame
+    # The lines themselves, flat. See core/streets.Shapes for why they are not
+    # a geometry column.
+    shapes: object
 
 
-def lay_out(edges: gpd.GeoDataFrame, nodes: gpd.GeoDataFrame) -> Streets:
-    return Streets(network=search.flatten(edges, nodes), nodes=nodes, edges=edges)
-
-
-def graph_nodes(graph) -> gpd.GeoDataFrame:
-    """The graph's nodes as points, which is all that snapping needs."""
-    return ox.graph_to_gdfs(graph, edges=False)
+def lay_out(edges, nodes, shapes) -> Streets:
+    return Streets(network=search.flatten(edges, nodes), nodes=nodes,
+                   edges=edges, shapes=shapes)
 
 
 def snap(nodes, lat: float, lon: float) -> int:
@@ -91,26 +91,32 @@ def snap(nodes, lat: float, lon: float) -> int:
     expensive half: 0.36s on the 15 km disc, against the search's few ms. It
     does not depend on the sun, so a caller planning the same walk at every hour
     of the day builds it once and snaps once -- see `departures`.
+
+    Measured on the x and y columns rather than with GeoSeries.distance. Both
+    are the same Euclidean distance in the same projected CRS -- the projection
+    is what makes that true -- but one of them needs the node frame to carry
+    52,772 shapely Points, and the frame is held for the life of the process.
+    Compared on squared distance, so the whole column is a subtract and a
+    multiply, and only the winner gets a square root.
     """
     point = gpd.GeoSeries([Point(lon, lat)], crs=4326).to_crs(CRS).iloc[0]
 
-    distances = nodes.distance(point)
-    node = distances.idxmin()
-    if distances[node] > MAX_SNAP_M:
+    dx = nodes["x"].to_numpy(dtype="float64") - point.x
+    dy = nodes["y"].to_numpy(dtype="float64") - point.y
+    nearest = int(np.argmin(dx * dx + dy * dy))
+    away = float(np.hypot(dx[nearest], dy[nearest]))
+    node = nodes.index[nearest]
+
+    if away > MAX_SNAP_M:
         # Spelled from the constant rather than described in prose: this
         # message said "only covers the city centre" for as long as the graph
         # was a 1.7 km disc, and went on saying it after the graph was not.
         raise ValueError(
-            f"That point is {distances[node] / 1000:.1f} km from the nearest mapped "
+            f"That point is {away / 1000:.1f} km from the nearest mapped "
             f"street. The walking network reaches {GRAPH_RADIUS / 1000:.0f} km from "
             "the centre of Astana."
         )
     return node
-
-
-def nearest_node(graph, lat: float, lon: float) -> int:
-    """`snap`, for a caller holding a graph and doing it only once."""
-    return snap(graph_nodes(graph), lat, lon)
 
 
 def endpoints(streets: Streets, origin, destination) -> tuple[int, int]:
@@ -217,9 +223,14 @@ def measure(streets: Streets, day: Day, dated: list[tuple[int, int]]) -> dict:
 
 
 def geometry(streets: Streets, dated: list[tuple[int, int]]):
-    """One line for the whole walk, for the map to draw."""
-    lines = streets.edges.geometry.to_numpy()[[edge for edge, _ in dated]]
-    return shapely.line_merge(shapely.MultiLineString([list(line.coords) for line in lines]))
+    """One line for the whole walk, for the map to draw.
+
+    Built from the coordinate buffer rather than from a geometry column: a walk
+    is fifty-odd edges out of 152,734, and holding all of them as shapely
+    objects to reach those fifty cost 84 MB for the life of the process.
+    """
+    lines = [streets.shapes.line(edge) for edge, _ in dated]
+    return shapely.line_merge(shapely.MultiLineString(lines))
 
 
 def leg(streets: Streets, day: Day, dated: list[tuple[int, int]]) -> dict:

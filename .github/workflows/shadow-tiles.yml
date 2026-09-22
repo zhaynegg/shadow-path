@@ -5,8 +5,9 @@
 # built once go stale by about 1.5% a day near the equinoxes, so they are rebuilt
 # nightly rather than pinned to a date.
 #
-# For now this only builds and uploads the result as an artifact -- publishing is
-# a separate decision, and a job that is not yet green should not be deploying.
+# The result is published twice: as a workflow artifact, which is the record of
+# what a run produced, and as a rolling "tiles-latest" release, which is what
+# the two Render services pull from at build time. See render.yaml.
 name: Shadow tiles
 
 on:
@@ -29,6 +30,10 @@ on:
 concurrency:
   group: shadow-tiles
   cancel-in-progress: false
+
+# Writing a release, and nothing else.
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -112,7 +117,46 @@ jobs:
           path: |
             frontend/public/shadows/
             data/cache/scored/
-          # These are rebuilt nightly and nothing consumes them yet, so keeping
-          # a fortnight of them would only be storage -- and a day is no longer
-          # 59 MB. See the tile-size note in the README.
+          # These are rebuilt nightly, so keeping a fortnight of them would
+          # only be storage -- and a day is no longer 59 MB. See the tile-size
+          # note in the README. The release below is what actually gets served;
+          # this copy is the record of the run that produced it.
           retention-days: 7
+
+      # --- publish, for the two Render services to pull from ----------------
+      #
+      # A release rather than the artifact above, because an artifact needs an
+      # authenticated API call and a run id to fetch, while a release asset has
+      # a stable public URL that a build command can curl. One rolling tag,
+      # replaced each night: the tiles describe one day, and yesterday's are of
+      # no use to anybody once today's exist.
+      - name: Pack
+        run: |
+          tar -czf shadows.tar.gz -C frontend/public/shadows .
+          tar -czf scored.tar.gz -C data/cache/scored .
+          ls -lh shadows.tar.gz scored.tar.gz
+
+      - name: Publish as the rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete tiles-latest --yes --cleanup-tag || true
+          gh release create tiles-latest shadows.tar.gz scored.tar.gz \
+            --title "Shadow tiles, $(date -u +%Y-%m-%d)" \
+            --notes "Rebuilt nightly by .github/workflows/shadow-tiles.yml. \
+          Pulled at build time by both services in render.yaml."
+
+      # Render does not watch the release, so it has to be told. Both hooks are
+      # optional: without them the workflow still publishes, and the site picks
+      # the new tiles up at whatever deploy happens next.
+      - name: Ask Render to redeploy
+        env:
+          API_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_API }}
+          WEB_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_WEB }}
+        run: |
+          for hook in "$API_HOOK" "$WEB_HOOK"; do
+            if [ -n "$hook" ]; then curl -fsS -X POST "$hook" >/dev/null && echo "  triggered"; fi
+          done
+          if [ -z "$API_HOOK$WEB_HOOK" ]; then
+            echo "no deploy hooks configured -- see render.yaml"
+          fi

@@ -293,11 +293,13 @@ def test_day_endpoint_declines_before_it_reaches_the_graph(monkeypatch):
     answer. Either way the check has to be the cheap half: statting the files
     costs nothing; loading 153k edges to reach the same conclusion does not.
     """
-    def no_graph():
-        raise AssertionError("the scan must decline before it reaches the graph")
+    def no_graph(*args, **kwargs):
+        raise AssertionError("the scan must decline before it reaches the network")
 
-    monkeypatch.setattr(main, "graph", no_graph)
+    # Both seams: graph_edges is the cached frame, and street_tables.load is
+    # every road to it, including the one streets() takes.
     monkeypatch.setattr(main, "graph_edges", no_graph)
+    monkeypatch.setattr(main.street_tables, "load", no_graph)
     monkeypatch.setattr(main.scores, "missing", lambda *args: [dt.time(6, 0), dt.time(6, 20)])
     clear_caches()
 
@@ -338,11 +340,12 @@ def test_route_falls_back_to_one_stamp_without_a_cached_day(monkeypatch):
     /api/day: a single route can be priced from a single stamp. What it no
     longer does is build that stamp when it is absent -- see the test below.
     """
-    edges = gpd.GeoDataFrame(
-        {"shade_fraction": [0.4]}, geometry=[LineString([(0, 0), (100, 0)])], crs=CRS)
+    # The bare shade column, which is all scored_edges hands back now -- it used
+    # to copy the whole edge frame so that this one array could be read off it.
+    shade = np.array([0.4], dtype="float32")
 
     monkeypatch.setattr(main, "scored_day", lambda date: None)
-    monkeypatch.setattr(main, "scored_edges", lambda date, hour, minute: edges)
+    monkeypatch.setattr(main, "scored_edges", lambda date, hour, minute: shade)
 
     day = main.sun_over(today(), dt.time(13, 0))
 
@@ -366,13 +369,13 @@ def test_route_declines_a_stamp_the_export_never_wrote(monkeypatch):
     the line under test -- the stat that has to come before the load.
     """
     def no_graph(*args, **kwargs):
-        raise AssertionError("a declined route must not reach the graph")
+        raise AssertionError("a declined route must not reach the network")
 
     monkeypatch.setattr(main, "scored_day", lambda date: None)
     monkeypatch.setattr(main.scores, "scores_path",
                         lambda cache, radius, date, at: Path("no-such-stamp.parquet"))
-    monkeypatch.setattr(main, "graph", no_graph)
     monkeypatch.setattr(main, "graph_edges", no_graph)
+    monkeypatch.setattr(main.street_tables, "load", no_graph)
     monkeypatch.setattr(main.scores, "missing", lambda *args: [dt.time(6, 0)])
     clear_caches()
 

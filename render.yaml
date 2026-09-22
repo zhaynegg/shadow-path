@@ -1,0 +1,108 @@
+# Deployment blueprint: one API, one static site, and the nightly data between.
+#
+# The split is not arbitrary. Everything the map *draws* is a file built ahead
+# of time -- shadow tiles, the basemap, the search index -- so it is a static
+# site on a CDN and costs nothing. What is left for a server is routing, which
+# is an A* over arrays. See the memory note on the API service below.
+#
+# First deploy, in order:
+#   1. run the "shadow-tiles" workflow once (Actions tab) so the release the
+#      builds below pull from exists at all
+#   2. create the blueprint from this file
+#   3. put the two deploy hook URLs into the repo's Actions secrets as
+#      RENDER_DEPLOY_HOOK_API and RENDER_DEPLOY_HOOK_WEB, so each night's
+#      tiles go live -- see .github/workflows/shadow-tiles.yml
+
+services:
+  # --- routing -------------------------------------------------------------
+  - name: shadow-path-api
+    type: web
+    runtime: python
+    # 0.5 CPU, 512 MB. Peak RSS on this graph is about 350 MB: 130 MB of
+    # imports, 90 MB for the street tables and their adjacency, 130 MB while a
+    # day of scores is read in. That headroom is the whole reason the API no
+    # longer opens a graphml -- doing so cost 1.29 GB and could not have run
+    # here at all. See backend/core/streets.py.
+    #
+    # One worker, deliberately. Each one is a full copy of the network, so a
+    # second would not fit. Scale by adding instances, never by adding workers.
+    # If a blueprint sync rejects this id, `starter` is the older name for
+    # the same tier. `free` is also 512 MB, at 0.1 CPU and with a spin-down
+    # that puts a cold graph load in front of somebody's first request.
+    plan: 0.5c-512mb
+    rootDir: backend
+    healthCheckPath: /api/health
+    buildCommand: |
+      pip install uv
+      uv sync --frozen --no-dev
+      # Today's scored graph, from the nightly run. Not fatal if it is absent:
+      # the API answers /api/health either way and declines routes with a
+      # message naming the export, which is a far better failure than a
+      # service that will not start.
+      curl -fsSL "$RUNTIME_ASSETS_URL/scored.tar.gz" -o /tmp/scored.tar.gz \
+        && mkdir -p ../data/cache/scored \
+        && tar -xzf /tmp/scored.tar.gz -C ../data/cache/scored \
+        || echo "WARNING: no scored graphs fetched -- routes will decline until the nightly run lands"
+    startCommand: uv run uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - key: RUNTIME_ASSETS_URL
+        value: https://github.com/zhaynegg/shadow-path/releases/download/tiles-latest
+      # Keep pip and uv from writing caches into an image that is thrown away.
+      - key: UV_NO_CACHE
+        value: "1"
+
+  # --- the map -------------------------------------------------------------
+  - name: shadow-path-web
+    type: web
+    runtime: static
+    rootDir: frontend
+    staticPublishPath: dist
+    buildCommand: |
+      npm ci
+      npm run build
+      # The tiles are a third of a gigabyte and rebuilt nightly, so they are
+      # not in the repo. Unlike the scores above this IS fatal: a map with no
+      # shadow tiles looks broken rather than degraded, and a build that stops
+      # with this message is easier to understand than a grey city.
+      curl -fsSL "$RUNTIME_ASSETS_URL/shadows.tar.gz" -o /tmp/shadows.tar.gz
+      mkdir -p dist/shadows
+      tar -xzf /tmp/shadows.tar.gz -C dist/shadows
+    envVars:
+      - key: RUNTIME_ASSETS_URL
+        value: https://github.com/zhaynegg/shadow-path/releases/download/tiles-latest
+    headers:
+      # The one setting the whole map depends on.
+      #
+      # pmtiles is a single file read by HTTP range request -- the browser asks
+      # for the few kilobytes covering the tiles on screen and never downloads
+      # the other 350 MB. A CDN that compresses a response at the edge cannot
+      # serve ranges of it, so the range requests fail and nothing draws.
+      # Forcing a content type the edge will not try to compress is what keeps
+      # them byte-ranged.
+      - path: /*.pmtiles
+        name: Content-Type
+        value: application/octet-stream
+      - path: /shadows/*.pmtiles
+        name: Content-Type
+        value: application/octet-stream
+      # The tiles are replaced wholesale each night and named by stamp, so a
+      # long cache would serve yesterday's sun. The manifest decides what is
+      # current, so it must never be the stale one.
+      - path: /shadows/index.json
+        name: Cache-Control
+        value: no-cache
+
+    routes:
+      # Same-origin, so nothing here needs CORS and the frontend keeps using
+      # relative /api URLs exactly as it does behind Vite's dev proxy. The
+      # destination is the API service's own name above -- rename one and this
+      # has to move with it.
+      - type: rewrite
+        source: /api/*
+        destination: https://shadow-path-api.onrender.com/api/*
+      # Everything else is the single-page app.
+      - type: rewrite
+        source: /*
+        destination: /index.html

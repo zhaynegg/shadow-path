@@ -6,9 +6,10 @@ and show what that detour costs against the plain shortest path.
 
 > **Status:** working end to end for Astana. The map opens on the city's
 > current hour, draws that day's shadows city-wide, and routes against them. A
-> nightly GitHub Actions job rebuilds the tiles for the new date. Not deployed:
-> CI uploads the tiles as a workflow artifact and nothing serves them yet. The
-> data findings below are measured, not assumed — see [Data](#data).
+> nightly GitHub Actions job rebuilds the tiles for the new date, publishes them
+> as a rolling release, and asks Render to redeploy — see
+> [Deployment](#deployment). The data findings below are measured, not assumed
+> — see [Data](#data).
 
 ## How it works
 
@@ -658,8 +659,88 @@ cd backend && uv run uvicorn backend.main:app --reload --port 8000
 ```
 
 Vite proxies `/api` to `http://localhost:8000`, so the frontend uses relative
-URLs in dev. In production, build the frontend to static assets and serve from
-FastAPI's `StaticFiles` or a CDN.
+URLs in dev. In production a rewrite rule does the same job — see below.
+
+## Deployment
+
+Two services on Render, described by [`render.yaml`](render.yaml). Everything
+the map *draws* is built ahead of time, so it is a static site on a CDN and
+costs nothing; what is left for a server is an A\* over arrays.
+
+```
+  static site (free)                    web service (0.5 CPU, 512 MB)
+  frontend/dist                         uvicorn, one worker
+  + basemap, search index               + street tables (6.9 MB, tracked)
+  + 352 MB of shadow tiles              + 24 MB of scored graphs
+        │                                     ▲
+        └── /api/* rewritten, same-origin ────┘
+```
+
+The rewrite is what keeps the frontend's relative `/api` URLs working unchanged
+from dev: no CORS, no second origin, no build-time API base URL.
+
+### The 512 MB, and why it was nearly fatal
+
+Render's smallest paid instance is 512 MB of RAM. The API used to peak at
+**1.29 GB**, and 887 MB of that was one line — `ox.load_graphml`, building a
+networkx MultiDiGraph of 153k edges that was flattened into arrays once and then
+held, untraversed, for the life of the process. osmnx cost another 226 MB just
+to import.
+
+`backend/core/streets.py` records what the graph reduces to. Measured on a cold
+uvicorn process, this graph, a real route and a real day scan:
+
+| | peak RSS |
+|---|---|
+| graphml + osmnx (before) | 1,294 MB |
+| two parquet tables instead | 524 MB |
+| day read into one table rather than stacked three times | 460 MB |
+| edge shapes as a coordinate buffer, not 152k GEOS objects | **346 MB** |
+
+Each step is a thing the process was holding that no request ever read. The
+last is the largest: 490,368 coordinate pairs weigh 7.8 MB, and wrapping them in
+shapely objects cost 84 MB to say the same thing — while the only reader draws
+the fifty-odd edges one walk used.
+
+**One worker.** Each is a full copy of the network, so a second does not fit.
+Scale with instances, never with `--workers`.
+
+### What is tracked, and what is fetched
+
+A fresh checkout can build the frontend but cannot route, because the expensive
+inputs are gitignored. Three of them are now tracked, on the rule the footprints
+already followed — *nothing in this repo can rebuild it*:
+
+- `data/cache/streets/` (6.9 MB) — the graph reduced to what the router reads.
+  Its source, `walk-15000m.graphml`, is 65 MB and itself comes from Overpass.
+- `frontend/public/my_area.pmtiles` (14 MB) — a Protomaps extract of the bbox
+  the map clamps to. The `.gitignore` entry carries the command to remake it.
+- `data/cache/astana_canopy_height.parquet` (15 MB) and the other caches.
+
+The two nightly outputs are too large and too short-lived to track — 352 MB of
+tiles and 24 MB of scores, replaced every day — so the workflow publishes them
+as a rolling `tiles-latest` release and both build commands `curl` from it. A
+release rather than the workflow artifact because an artifact needs an
+authenticated call and a run id, while a release asset has a stable public URL a
+build command can fetch.
+
+The two builds treat a missing fetch differently, on purpose. The API's is not
+fatal: without scores it still serves `/api/health` and declines routes with a
+message naming the export, which beats a service that will not start. The site's
+is fatal: a map with no shadow tiles looks broken rather than degraded, and a
+build that stops with that message is easier to read than a grey city.
+
+### First deploy
+
+1. Run the **Shadow tiles** workflow once, so `tiles-latest` exists to pull from.
+2. Create a Blueprint from `render.yaml`.
+3. Copy both services' deploy hook URLs into the repo's Actions secrets as
+   `RENDER_DEPLOY_HOOK_API` and `RENDER_DEPLOY_HOOK_WEB`, so each night's tiles
+   go live. Without them the workflow still publishes; the site just picks the
+   new tiles up at whatever deploy happens next.
+
+Renaming `shadow-path-api` means editing the rewrite destination in
+`render.yaml` to match — it is a literal URL, not a service reference.
 
 ## Known gaps
 

@@ -23,6 +23,16 @@ data/cache/*
 !data/cache/astana_trees.parquet
 # ...and the detected canopy, which the shadow model now reads.
 !data/cache/astana_canopy.parquet
+# ...and the street tables the API routes on. These are the graph reduced to
+# what a request actually reads -- see backend/core/streets.py -- and they are
+# tracked for a harder reason than the others: the graphml they come from is
+# 65 MB and gitignored, so a deploy that did not carry these would have to
+# rebuild it from Overpass before it could answer anything.
+# The directory has to be re-included before anything inside it can be: git
+# never looks inside a directory it has already excluded, so the file patterns
+# below do nothing on their own.
+!data/cache/streets/
+!data/cache/streets/**
 # ...and the canopy built from measured heights, which it reads in preference.
 # Rebuilding it means 120 MB off S3 and several minutes of raster work, so a CI
 # runner that had to do it nightly would be paying for an answer that changes
@@ -33,6 +43,15 @@ data/cache/*
 # calls it, so a fresh checkout could not rebuild this.
 !data/cache/astana_places.parquet
 frontend/public/*.pmtiles
+# ...except the basemap, for the reason the footprints are tracked: nothing in
+# this repo can rebuild it. It is a Protomaps extract of the same bounding box
+# the map clamps itself to -- 70.3688,50.7669,72.3875,51.4848 -- and it changes
+# only when Protomaps publish a new build, which is to say never on our account.
+# A deploy without it is a blank grey page.
+#
+#   pmtiles extract https://build.protomaps.com/<YYYYMMDD>.pmtiles my_area.pmtiles \
+#     --bbox=70.3688,50.7669,72.3875,51.4848
+!frontend/public/my_area.pmtiles
 
 # Env & editors
 .env
