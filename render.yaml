@@ -26,10 +26,16 @@ services:
     #
     # One worker, deliberately. Each one is a full copy of the network, so a
     # second would not fit. Scale by adding instances, never by adding workers.
-    # If a blueprint sync rejects this id, `starter` is the older name for
-    # the same tier. `free` is also 512 MB, at 0.1 CPU and with a spin-down
-    # that puts a cold graph load in front of somebody's first request.
-    plan: 0.5c-512mb
+    # Free, which is the same 512 MB at 0.1 CPU. Two consequences worth
+    # knowing, both about the first request after a quiet spell: a free
+    # instance spins down after 15 minutes idle and takes about a minute to
+    # come back, and then pays the one-off ~0.5s to read the street tables on
+    # top of that. Requests after it are unaffected -- the network is held for
+    # the life of the process.
+    #
+    # `0.5c-512mb` is the $7 tier: same memory, 0.5 CPU, no spin-down. Swap it
+    # back here if the wake-up ever matters more than the card does.
+    plan: free
     rootDir: backend
     healthCheckPath: /api/health
     buildCommand: |
