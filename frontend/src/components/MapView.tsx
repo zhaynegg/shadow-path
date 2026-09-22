@@ -72,6 +72,15 @@ const SEARCH_ZOOM = 15
 // which one is visible. Pointing one source at a new file means asking maplibre
 // to reload it -- which raced itself when the slider was dragged and left the
 // wrong stamp on screen. A visibility flip is local and cannot race.
+// A licence term, not a courtesy. The canopy in these tiles is cut from Meta
+// and WRI's 1 m canopy height map, which is CC-BY-4.0 and requires the credit
+// wherever the derived work is shown -- and this is the only place it is shown.
+// maplibre de-duplicates identical strings, so naming it on every stamp's source
+// puts it in the corner exactly once.
+const CANOPY_CREDIT =
+    'Canopy <a href="https://registry.opendata.aws/dataforgood-fb-forests/" '
+    + 'target="_blank" rel="noreferrer">Meta/WRI</a> CC BY 4.0, imagery \u00a9 Maxar'
+
 const stem = (time: string) => time.replace(':', '')
 const shadowTiles = (time: string) => `pmtiles:///shadows/${stem(time)}.pmtiles`
 const shadowSource = (time: string) => `shadows-${stem(time)}`
@@ -527,7 +536,11 @@ function MapView() {
                     // already drawn when you arrive.
                     ...Object.fromEntries(manifest.times.map(stamp => [
                         shadowSource(stamp),
-                        { type: 'vector' as const, url: shadowTiles(stamp) },
+                        {
+                            type: 'vector' as const,
+                            url: shadowTiles(stamp),
+                            attribution: CANOPY_CREDIT,
+                        },
                     ])),
                     baseline: { type: 'geojson', data: EMPTY },
                     route: { type: 'geojson', data: EMPTY },

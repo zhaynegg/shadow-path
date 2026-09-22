@@ -564,6 +564,8 @@ backend/
                              and the routing scores cut from the same field
     fetch_trees.py           cache OSM tree rows and points
     detect_trees.py          find canopy in Sentinel-2 (needs --group ml)
+    fetch_canopy_height.py   crowns and measured heights from the 1 m canopy
+                             height map, Sentinel-2 filling what it missed
   src/backend/
     main.py                  FastAPI app: /api/route, /api/day, /api/health
     config.py                paths, radius, timezone, city centre, today()
@@ -608,6 +610,8 @@ data/
     astana_buildings.parquet ...except this, tracked so CI has footprints
     astana_trees.parquet     ...and this, 101 KB of mapped trees
     astana_canopy.parquet    ...and the detected canopy, 2.7 MB
+    astana_canopy_height.parquet  ...and the canopy with measured heights,
+                             15 MB, which the shadow model reads in preference
   height_overrides.csv       hand-entered storey counts
   survey_queue.csv           buildings awaiting a manual storey count
 ```
@@ -693,6 +697,100 @@ tree features for all of Astana, reaching 0.1% of the walk network — nowhere
 near enough to change a route. `scripts/detect_trees.py` fills in the rest from
 Sentinel-2 imagery and takes that to **62%**.
 
+**The 10 m pixel was the ceiling, and no classifier was going to raise it.**
+Sentinel-2 resolves 10 m; a street tree's crown is smaller than one of its
+pixels. So `core/trees.py` could only draw each lit cell as a disc of the cell's
+own area at the cell's centre — every tree in the city the same size, on the
+sensor's grid, up to 7 m from where it stands. That is a resolution limit, not a
+model error, and the honest fix is a better source rather than a better model.
+
+`scripts/fetch_canopy_height.py` reads one: Meta and WRI's global canopy
+**height** map, a 1 m grid derived from Maxar imagery by a DINOv2 model
+calibrated against GEDI lidar, published CC-BY-4.0. At Astana's latitude its
+1.19 m web-mercator pixel is **0.75 m on the ground**. Two z9 quadkey tiles
+cover the study box, read by byte range out of the COGs exactly as the Sentinel-2
+bands are — the 15 MB tile index is derived rather than shipped.
+
+**Why not train a crown detector, which is the obvious thing to do.** The open
+datasets exist and are good: [OAM-TCD](https://arxiv.org/abs/2407.11743) is
+5,072 aerial images at 10 cm with 280,000 labelled crowns, and Restor publish a
+trained pipeline on it. The blocker is downstream of the model. OpenAerialMap
+holds **no imagery at all over Astana** — 42 scenes across the whole region, every
+one a drone survey somewhere else — and Google, Bing and Esri each bar a derived
+dataset displayed on a non-their map, for the same reason recorded above. A model
+trained on OAM-TCD would have nothing here it could legally be run on and
+published from. The height map is that computer-vision pipeline's output, already
+run at planetary scale and released under a licence that permits this.
+
+**It is a combination, not a replacement, and the subtraction is the point.**
+The two sources agree on remarkably little: of the Sentinel-2 canopy, only
+**16%** is also canopy in the height map. Some of that gap is vintage — the
+height map credits "© 2016 Maxar" against a Sentinel-2 scene from August 2024,
+in a city planting hard in between — so each keeps the ground it is better at:
+
+```
+chm_height     65,911 crowns   20.66 km2   a measured shape and a measured height
+canopy_model   89,738 blobs    22.78 km2   Sentinel-2, minus every pixel the
+                                           height map already called canopy
+```
+
+Cut in raster space rather than by geometric overlay, and cut *after* the
+Sentinel-2 cells are rounded — subtracting first would have shipped the lattice
+with its corners intact, blockier than the thing being replaced and claiming the
+canopy stops exactly on a pixel boundary. Without the subtraction there is no
+combination at all: `shadow_field` unions what it is given, so an 8 m blob laid
+over a measured 4 m crown simply wins and the measurement is discarded.
+
+Whether the Sentinel-2 remainder deserves to survive is a fair question, and the
+README's own two checks answer it — the remainder lands on roofs *less* often
+than the height map's own canopy does, and on OSM-mapped trees nearly twice as
+often:
+
+```
+                          on roofs   on grass   on an OSM tree
+height map's own crowns      1.76%      1.27%            0.39%
+the Sentinel-2 remainder     0.87%      1.10%            0.70%
+```
+
+**The 8 m tree was the other half of the error, and a bigger one than it looks.**
+`TREE_HEIGHT_M` was a guess made when nothing could check it. The height map can:
+**97% of Astana's canopy area is below 8 m**, and the area-weighted median is
+**4 m**. The old constant sat near the 95th percentile of the city's actual
+canopy and therefore roughly doubled every tree shadow on the map. It is now 4 m,
+and it is the same number the Sentinel-2 remainder is filled at, so one street
+tree cannot cast two different shadows depending on which source found it.
+
+Weighted by area rather than by crown, which matters here. Counted one apiece
+the crowns have a median of **2 m**, because a great many of them are specks of
+twenty-odd square metres; weighted by the ground they cover it is **4 m**. A
+walker stands under square metres, not under polygons.
+
+**The two corrections very nearly cancel, which is the reassuring part.** More
+than half again as much canopy area, at half the height, over the same walk
+network. Mean `shade_fraction`, length-weighted, at 13:00 on 13 September:
+
+| | mean shade | canopy | scoring |
+|---|---|---|---|
+| buildings only | 0.074 | — | 10 s |
+| old: Sentinel-2 lattice, flat 8 m | 0.203 | 27.4 km² | 139 s |
+| the same geometry at the measured 4 m | 0.181 | 27.4 km² | 128 s |
+| **shipped: height map + fill, measured** | **0.195** | **43.8 km²** | **111 s** |
+
+So the router sees about as much shade as it did (0.203 → 0.195, a 4% fall) — it
+is now in the right places and the right shapes, rather than more of it. A change
+that moved the total sharply in either direction would have been the suspicious
+outcome: the city has the trees it has, and only the description of them changed.
+
+It is also **20% cheaper to score**, with twice the casters, because a 4 m tree
+sweeps a quarter the hull a phantom 8 m one did. That matters for the nightly
+build, which pays this once per stamp.
+
+**What it still cannot do.** It has no more idea than the old path did which
+species it is looking at, and a height map cannot tell a dense hedge from a small
+tree — everything here is canopy, scored dappled. Canopy below 2 m is dropped
+entirely, which is also where the height map's stated 2.8 m mean absolute error
+makes a reading least trustworthy.
+
 The detector is a gradient-boosted tree over per-pixel spectral features — 7
 bands plus NDVI, NDWI, NBR, a SWIR ratio and red-edge NDVI — trained on what OSM
 already knows. Positives are `natural=tree` and `natural=tree_row`; negatives are
@@ -759,9 +857,21 @@ how tall** — every polygon still leaves with the flat 8 m constant, tagged
 **Model limits:** flat terrain, no awnings or arcades. No DEM, so hills and
 their shadows are invisible.
 
-**The tiles have grown, twice.** Canopy roughly tripled them, 59 MB to 151 MB a
-day. Cutting the low-sun hours into thirds took mid-September from 13 tilesets
-to 24, and **144 MB to 269.5 MB**. Still nothing next to a Pages site limit, and
+**The tiles have grown, three times now.** Canopy roughly tripled them, 59 MB to
+151 MB a day. Cutting the low-sun hours into thirds took mid-September from 13
+tilesets to 24, and **144 MB to 269.5 MB**. Measured heights added a further
+half: like for like, the 13:00 stamp went **12.8 MB to 19.7 MB**. A full rebuild
+for 22 September — 22 tilesets, daylight being shorter by then — came to
+**352 MB**, so the day's total now tracks the season as much as the geometry.
+
+That last one is worth understanding before trying to tune it away, because it
+is caused by the fix rather than by carelessness. A flat 8 m made neighbouring
+tree shadows long enough to overlap and union into a few large blobs; at a
+measured 4 m they stay apart, so the same canopy arrives as many more separate
+polygons. Cheaper to *score*, for the same reason, and dearer to *store*. The
+lever, if it is ever needed, is `MIN_CROWN_M2` in fetch_canopy_height.py — a
+great many crowns are specks of twenty-odd square metres carrying a few percent
+of the canopy between them. Still nothing next to a Pages site limit, and
 the browser only byte-ranges what is on screen, but it changes the arithmetic on
 whatever ends up serving them — and it is why the split follows the sun instead
 of the clock. Uniform `:00/:20/:40` would have been 39 tilesets and about 430 MB
@@ -772,3 +882,15 @@ for a midday refinement worth 3.6% of edges.
 Building and network data © OpenStreetMap contributors, ODbL. Attribution
 belongs in the map corner from day one; note that ODbL's share-alike applies if
 you ever redistribute the derived scored graph as a database.
+
+Canopy heights from *High Resolution Canopy Height Maps*, Meta and the World
+Resources Institute, 2024 — source imagery © 2016 Maxar — used under CC-BY-4.0.
+That licence requires the credit wherever the derived work is shown, which here
+means the map corner and not only this file: it is attached to every shadow
+tileset's source in `MapView.tsx`, where maplibre de-duplicates it down to one
+line. Sentinel-2 imagery is Copernicus, free and open.
+
+Choosing sources by licence is not incidental to this project. Google, Bing and
+Esri all resolve Astana's trees far better than anything used here, and all
+three bar a derived dataset displayed on somebody else's map — which is exactly
+what a canopy layer is.

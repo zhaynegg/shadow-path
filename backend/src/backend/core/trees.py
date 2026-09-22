@@ -1,13 +1,21 @@
-"""Mapped trees as canopy that casts a shadow, on the days it has leaves.
+"""Trees as canopy that casts a shadow, on the days it has leaves.
 
 Trees reach the shadow model the same way buildings do -- a polygon and a
-height -- so nothing in shadows.py needs to know the difference. What is
-different is the confidence: OSM has no height on a single Astana tree, so
-every height here is a constant, and the crown width is a constant too.
+height -- so nothing in shadows.py needs to know the difference. What differs
+is how much of each is known, and there are now three answers to that:
 
-Read the coverage note in scripts/fetch_trees.py before trusting any of this.
-Inside the routing disc it is about 1.2 km of planting against 570 km of walk
-network, which is not enough to change a route.
+  chm_height    a crown cut from a 1 m canopy height map, carrying the height
+                measured inside it. A shape and a number, neither invented.
+  canopy_model  Sentinel-2 said canopy and the height map did not. A real
+                place, at the city's median height -- and drawn as a rounded
+                blob because a 10 m pixel has no edge worth believing.
+  tree_default  OSM mapped a tree row. A real place, at a guessed crown width
+                and the same median height.
+
+Only the first is a measurement. Read the coverage note in fetch_trees.py
+before trusting the third: inside the routing disc OSM holds about 1.2 km of
+planting against 570 km of walk network, which is not enough to change a route
+and never was -- the other two are what made trees matter here.
 """
 
 from __future__ import annotations
@@ -29,6 +37,13 @@ TREES = "astana_trees.parquet"
 # 0.1% of the streets here; this reaches 62%. Already polygons, so unlike the
 # OSM rows it needs no buffering -- but it does need rounding. See below.
 CANOPY = "astana_canopy.parquet"
+
+# The same thing built properly, by scripts/fetch_canopy_height.py: crowns cut
+# from a 1 m canopy *height* map, each carrying the height measured inside it,
+# with the Sentinel-2 detector filling only what that map missed. Preferred
+# wherever it exists, and everything below about cells and rounding is the
+# fallback for where it does not.
+CANOPY_HEIGHT = "astana_canopy_height.parquet"
 
 # Sentinel-2 resolves 10 m, and the detector returns one square per lit pixel,
 # so the cache is a lattice: 77,654 polygons, three quarters of them a single
@@ -79,9 +94,20 @@ CROWN_FROM_CELL_M = float(np.sqrt(
 CROWN_RADIUS_M = 3.0
 
 # Astana street planting is mostly poplar, birch and elm, much of it young.
-# A guess, and a deliberately modest one: at a 40 degree sun a metre of tree
-# height is a metre of shadow, so overstating this invents shade.
-TREE_HEIGHT_M = 8.0
+#
+# This was 8.0 m, and 8.0 m was a guess made before there was anything to check
+# it against. There is now: the 1 m height map measures 97% of the city's canopy
+# area below 8 m, and its area-weighted median is 4 m -- so the old constant sat
+# near the 95th percentile of Astana's actual canopy and roughly doubled every
+# tree shadow on the map. Weighted by area rather than by crown, because half
+# the crowns found are specks of twenty-odd square metres and a walker stands
+# under square metres, not under polygons.
+#
+# Still a constant, and still only for the rows OSM mapped and the canopy the
+# height map did not see -- but a measured one, and the same number the fill in
+# fetch_canopy_height.py uses, so one street tree cannot cast two different
+# shadows depending on which source found it.
+TREE_HEIGHT_M = 4.0
 
 # Marks every tree height as a guess, so the provenance column keeps meaning
 # what it means for buildings and the UI can grey these the same way.
@@ -92,10 +118,14 @@ HEIGHT_SOURCE = "tree_default"
 # something somebody actually surveyed.
 CANOPY_SOURCE = "canopy_model"
 
+# Canopy whose height was measured rather than assumed. A guess once, not twice:
+# a model still said there is a tree, but nothing here decided how tall it is.
+MEASURED_SOURCE = "chm_height"
+
 # Every source whose shade is dappled rather than solid. A wall stops all the
 # light; a crown lets a good deal through, and the two should not be scored as
 # the same thing.
-CANOPY_SOURCES = frozenset({HEIGHT_SOURCE, CANOPY_SOURCE})
+CANOPY_SOURCES = frozenset({HEIGHT_SOURCE, CANOPY_SOURCE, MEASURED_SOURCE})
 
 # How much of the sun a summer crown actually blocks. A guess, but a consequential
 # one: canopy is now more than half the shadow area in the routing disc, so
@@ -135,11 +165,7 @@ def load_trees(cache_dir: Path, radius: float | None = None) -> gpd.GeoDataFrame
     if not path.exists():
         raise FileNotFoundError(f"{path} is missing -- run scripts/fetch_trees.py")
 
-    gdf = gpd.read_parquet(path)
-
-    if radius is not None:
-        centre = gpd.GeoSeries([Point(LON, LAT)], crs=4326).to_crs(gdf.crs).iloc[0]
-        gdf = gdf[gdf.geometry.distance(centre) <= radius]
+    gdf = within(gpd.read_parquet(path), radius)
 
     canopy = gdf.copy()
     canopy["geometry"] = gdf.geometry.buffer(CROWN_RADIUS_M)
@@ -148,22 +174,40 @@ def load_trees(cache_dir: Path, radius: float | None = None) -> gpd.GeoDataFrame
     return canopy
 
 
-def load_canopy(cache_dir: Path, radius: float | None = None) -> gpd.GeoDataFrame:
-    """Model-detected canopy, or nothing if it has not been run.
+def within(gdf: gpd.GeoDataFrame, radius: float | None) -> gpd.GeoDataFrame:
+    """The rows inside `radius` of the city centre, or all of them if None.
 
-    Absent is a normal state -- the detector needs the ml dependency group and
-    a trip to the imagery -- so this returns empty rather than raising. The OSM
-    trees stand on their own.
+    The router asks for a disc and the tile export asks for everything, and
+    three loaders here were spelling the same filter out three times.
     """
+    if radius is None:
+        return gdf
+    centre = gpd.GeoSeries([Point(LON, LAT)], crs=4326).to_crs(gdf.crs).iloc[0]
+    return gdf[gdf.geometry.distance(centre) <= radius]
+
+
+def load_canopy(cache_dir: Path, radius: float | None = None) -> gpd.GeoDataFrame:
+    """Model-detected canopy, from the best source that has been built.
+
+    Absent is a normal state for both -- each needs the ml dependency group and
+    a trip to somebody's imagery -- so this returns empty rather than raising.
+    The OSM trees stand on their own.
+
+    The measured file is preferred and is not merely a better version of the
+    other one: its polygons are crowns rather than pixels, so there is nothing
+    to round, and each carries the height measured inside it rather than the
+    constant. Falling back is a real fallback, not a slower path to the same
+    answer -- the lattice comes back, and so does the flat height.
+    """
+    measured = cache_dir / CANOPY_HEIGHT
+    if measured.exists():
+        return within(gpd.read_parquet(measured), radius)
+
     path = cache_dir / CANOPY
     if not path.exists():
         return gpd.GeoDataFrame(geometry=[], crs=None)
 
-    gdf = gpd.read_parquet(path)
-    if radius is not None:
-        centre = gpd.GeoSeries([Point(LON, LAT)], crs=4326).to_crs(gdf.crs).iloc[0]
-        gdf = gdf[gdf.geometry.distance(centre) <= radius]
-
+    gdf = within(gpd.read_parquet(path), radius)
     rounded = gpd.GeoDataFrame(geometry=round_cells(gdf.geometry.values), crs=gdf.crs)
     rounded["height_m"] = TREE_HEIGHT_M
     rounded["height_source"] = CANOPY_SOURCE

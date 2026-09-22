@@ -23,6 +23,11 @@ data/cache/*
 !data/cache/astana_trees.parquet
 # ...and the detected canopy, which the shadow model now reads.
 !data/cache/astana_canopy.parquet
+# ...and the canopy built from measured heights, which it reads in preference.
+# Rebuilding it means 120 MB off S3 and several minutes of raster work, so a CI
+# runner that had to do it nightly would be paying for an answer that changes
+# only when Meta publish a new map -- which is to say, almost never.
+!data/cache/astana_canopy_height.parquet
 # ...and the named places behind the search index. Same reasoning again: the
 # Overpass fetch lives in scripts/fetch_places.py and the index export never
 # calls it, so a fresh checkout could not rebuild this.
