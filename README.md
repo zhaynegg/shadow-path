@@ -591,12 +591,14 @@ frontend/src/
   lib/
     stamps.ts                which stamps exist, and what time it is in the city
     departures.ts            the day scan's chart maths and its recommendation
+    locate.ts                the device's own position, and whether the graph
+                             reaches it -- REACH_M mirrors GRAPH_RADIUS
     footprint.ts, format.ts
   components/
     MapView.tsx              map, shadow + building layers, routes, the clock
     RouteSummary.tsx         the two routes, and the difference between them
     DeparturePlanner.tsx     shade against departure time, and when to leave
-    controls/{TimeSlider,ShadeSlider,SearchBox}.tsx
+    controls/{TimeSlider,ShadeSlider,SearchBox,LocateButton}.tsx
 
 .github/workflows/
   shadow-tiles.yml           nightly rebuild of the tiles for the current date

@@ -6,6 +6,7 @@ import { layers, GRAYSCALE } from '@protomaps/basemaps'
 import TimeSlider from './controls/TimeSlider'
 import ShadeSlider from './controls/ShadeSlider'
 import SearchBox from './controls/SearchBox'
+import LocateButton from './controls/LocateButton'
 import RouteSummary from './RouteSummary'
 import DeparturePlanner from './DeparturePlanner'
 import type { Place } from '../api/geocode'
@@ -17,6 +18,7 @@ import {
     WHOLE_HOURS, cityMinutes, isDaylight, nearestStamp, prettyDate, sliderTimes,
 } from '../lib/stamps'
 import { footprintAt } from '../lib/footprint'
+import { COARSE_M, outOfReach, roughly, type Fix } from '../lib/locate'
 
 // What the backend last said, and which request it was saying it about. Either
 // a plan or a message, never both -- a failed request has no route to draw.
@@ -25,6 +27,12 @@ type Answer = { key: string, plan?: RoutePlan, error?: string }
 // The same idea for the whole-day scan, tagged the same way and for the same
 // reason: a scan takes seconds, and the pins can move while it is running.
 type DayAnswer = { key: string, plan?: DayPlan, error?: string }
+
+// What the locate button last had to say. `point` is what it is about, and it
+// is the same tagging idea once more: a note that the fix was only good to a
+// kilometre is about one pin, and has to leave when that pin does. An error
+// has no point to be about, and stays until the next attempt.
+type Located = { tone: 'error' | 'info', text: string, point?: LatLon }
 
 const protocol = new Protocol({ metadata: true })
 
@@ -173,6 +181,9 @@ function MapView() {
     const [alpha, setAlpha] = useState(INITIAL_ALPHA)
     const [points, setPoints] = useState<LatLon[]>([])
 
+    // What the locate button last did, or null if it has nothing to say.
+    const [located, setLocated] = useState<Located | null>(null)
+
     // One slot for whatever the backend last said, tagged with the request it
     // was an answer to. Tagging is the whole mechanism: it lets the plan, the
     // error and the spinner all be worked out during render, instead of being
@@ -188,15 +199,16 @@ function MapView() {
 
     const times = sliderTimes(manifest)
 
-    // A searched point is one you have not seen yet, so the map has to go to
-    // it -- unlike a clicked one, which is already under the cursor. With both
-    // ends set, show the whole walk rather than only its far end.
-    const pickPlace = (place: Place) => {
+    // A point picked anywhere but on the map is one you have not seen yet, so
+    // the map has to go to it -- unlike a clicked one, which is already under
+    // the cursor. Both the search box and the locate button arrive here. With
+    // both ends set, show the whole walk rather than only its far end.
+    const pickPoint = (point: LatLon) => {
         // Plain state, not the updater form: this is called from a handler that
         // is rebuilt every render, so `points` is already current -- and moving
         // the map is a side effect, which an updater is no place for. React may
         // call one twice.
-        const picked = nextPoints(points, place.point)
+        const picked = nextPoints(points, point)
         setPoints(picked)
 
         const map = mapRef.current
@@ -227,10 +239,39 @@ function MapView() {
             })
         } else {
             map.flyTo({
-                center: [place.point[1], place.point[0]],
+                center: [point[1], point[0]],
                 zoom: Math.max(map.getZoom(), SEARCH_ZOOM),
             })
         }
+    }
+
+    const pickPlace = (place: Place) => pickPoint(place.point)
+
+    // A fix is a point like any other once it is in range -- so it goes through
+    // pickPoint, and becomes the start or the destination by the same rule a
+    // click does. What is not like any other point is how well it is known: the
+    // pin is drawn at full confidence whether the device was sure to ten metres
+    // or to two kilometres, so where it was not sure, the dock says so.
+    const takeFix = ({ point, accuracy }: Fix) => {
+        // Checked here rather than left to the router. The backend would refuse
+        // this too -- snap() in core/routing.py, beyond 300 m from a street --
+        // but it would refuse it as a failed route two clicks later, and a
+        // reader in Almaty would have no way to know that being in Almaty was
+        // the problem.
+        const problem = outOfReach(point)
+        if (problem) {
+            setLocated({ tone: 'error', text: problem })
+            return
+        }
+
+        pickPoint(point)
+        setLocated(accuracy > COARSE_M
+            ? {
+                tone: 'info', point,
+                text: `Your device places you within about ${roughly(accuracy)}.`
+                    + ' Click the map to put the pin somewhere better.',
+            }
+            : null)
     }
 
     // What the controls currently describe. Two points and a clock make a
@@ -264,6 +305,16 @@ function MapView() {
 
     const dayAnswered = dayAnswer?.key === dayKey ? dayAnswer : null
     const scanning = scanKey !== null && scanKey === dayKey && dayAnswered === null
+
+    // A note about how well a fix was known outlives the fix only while the pin
+    // it was about is still on the map -- cleared, or pushed off by a third
+    // pick, and it is a caveat about nothing. Compared by value: two points are
+    // the same point, never the same array. A note with no point is an error,
+    // which was never about a pin and stays until the next attempt.
+    const about = located?.point
+    const locateNote = located && (!about || points.some(([lat, lon]) => lat === about[0] && lon === about[1]))
+        ? located
+        : null
 
     // --- what the tiles are, before any of them can be drawn ---------------
     useEffect(() => {
@@ -667,6 +718,22 @@ function MapView() {
 
                 <ShadeSlider value={alpha} onChange={setAlpha} />
 
+                {/* Directly above the button that caused it. The same crosshair
+                    on both, so a red panel at the bottom of the dock is tied to
+                    the thing that was just pressed rather than being one more
+                    message about the map in general. */}
+                {locateNote && (
+                    <div className={`note note-${locateNote.tone}`} role="status">
+                        <svg className="note-icon" width="13" height="13" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                            <circle cx="12" cy="12" r="7" />
+                            <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none" />
+                            <path d="M12 1.6v3.1M12 19.3v3.1M1.6 12h3.1M19.3 12h3.1" />
+                        </svg>
+                        <span>{locateNote.text}</span>
+                    </div>
+                )}
+
                 <div className="dock-foot">
                     {/* The map draws two kinds of shade in two colours and never
                         says so anywhere else. */}
@@ -678,9 +745,21 @@ function MapView() {
                             <span className="swatch" style={{ background: CANOPY_COLOUR }} />tree
                         </span>
                     </div>
-                    <button className="btn" onClick={() => setPoints([])} disabled={points.length === 0}>
-                        Clear
-                    </button>
+                    <div className="dock-actions">
+                        <LocateButton
+                            onFix={takeFix}
+                            onFail={text => setLocated({ tone: 'error', text })}
+                            next={points.length === 1 ? 'destination' : 'start'} />
+
+                        {/* Clears the note too. It is either a caveat about a
+                            pin that is going, or an error about an attempt
+                            nobody is still making. */}
+                        <button className="btn"
+                            onClick={() => { setPoints([]); setLocated(null) }}
+                            disabled={points.length === 0 && !locateNote}>
+                            Clear
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>

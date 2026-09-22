@@ -414,6 +414,15 @@ body {
     box-shadow: inset 0 0 0 1px rgba(185, 28, 28, 0.18);
 }
 
+/* Not a failure, so not red: a fix good to a kilometre worked exactly as asked.
+   Ink rather than colour, because what it is telling you is a caveat about a
+   pin that is already on the map, not something to go and fix. */
+.note-info {
+    color: var(--ink-2);
+    background: var(--surface-2);
+    box-shadow: inset 0 0 0 1px var(--panel-brd);
+}
+
 .note-icon { flex-shrink: 0; margin-top: 1px; }
 
 /* --- buttons ----------------------------------------------------------- */
@@ -450,6 +459,47 @@ body {
     outline-offset: 2px;
 }
 
+/* Square, because its label is a picture. The dock is 296px wide and its foot
+   already carries a legend and Clear; a button reading "Use my location" there
+   costs the legend its second line. The crosshair is the one map icon that
+   needs no words anywhere in the world. */
+.btn-icon {
+    display: grid;
+    place-items: center;
+    width: 29px;
+    height: 29px;
+    padding: 0;
+    flex-shrink: 0;
+}
+
+/* Full strength while the device thinks, against .btn:disabled's 0.45 -- it is
+   working, not unavailable, and fading it says the opposite. */
+.btn-icon.is-busy {
+    opacity: 1;
+    cursor: progress;
+}
+
+/* The ring is cut to a short arc in the markup while busy, so spinning it reads
+   as a spinner; at rest it is a whole circle and this does nothing. */
+.btn-icon.is-busy .locate-ring {
+    transform-origin: 12px 12px;
+    animation: locate-spin 900ms linear infinite;
+}
+
+@keyframes locate-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Somebody who has asked not to see motion still needs to know it is working.
+   The arc stays, and pulses where it would have spun. */
+@media (prefers-reduced-motion: reduce) {
+    .btn-icon.is-busy .locate-ring { animation: locate-pulse 1.1s ease-in-out infinite; }
+
+    @keyframes locate-pulse {
+        50% { opacity: 0.25; }
+    }
+}
+
 /* --- legend ------------------------------------------------------------ */
 
 .dock-foot {
@@ -467,6 +517,15 @@ body {
     gap: 4px 12px;
     font-size: 11px;
     color: var(--ink-2);
+}
+
+/* Kept together at the right end so the legend, which wraps, cannot get between
+   them. Both act on the two pins, and reading as one group says so. */
+.dock-actions {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-shrink: 0;
 }
 
 .legend-item {
