@@ -625,9 +625,12 @@ Frontend:
 cd frontend && npm install && npm run dev
 ```
 
-Shadow tiles (needs `brew install tippecanoe`). About 40 s per stamp and
-roughly flat across the day, so a mid-September date is 24 of them and a
-quarter of an hour.
+Shadow tiles (needs `brew install tippecanoe`). About 140 s per stamp and
+roughly flat across the day, so a late-September date is 22 of them and just
+under an hour. It was 40 s when canopy was a 10 m lattice of 80,559 blobs;
+measured crowns are 158,554 casters, and the tile build is where that is paid
+for -- scoring the graph got *cheaper*, because a 4 m tree sweeps a quarter the
+hull a phantom 8 m one did.
 Defaults to today in Astana, and deletes any tileset the new date has no sun
 for, so the directory always holds exactly one day:
 

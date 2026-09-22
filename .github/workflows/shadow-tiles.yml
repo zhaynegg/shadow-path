@@ -38,11 +38,18 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Was 45 when a date meant 13 hourly tilesets. Low-sun hours are now cut
-    # into thirds, which takes mid-September to 24 stamps and midsummer to 29.
-    # Cost is per stamp and roughly flat -- 33-43s each locally, and the low-sun
-    # ones are if anything the cheaper end -- so this scales with the count.
-    timeout-minutes: 90
+    # Two things drive this, and both have moved. The stamp count: low-sun hours
+    # are cut into thirds, which is 22 tilesets in late September and 29 at
+    # midsummer. And the cost of a stamp: canopy measured from the height map is
+    # 158,554 casters against the old lattice's 80,559, and a measured run came
+    # out at 142s per stamp locally -- not the 33-43s this comment claimed for
+    # most of its life.
+    #
+    # 29 stamps at 142s is 70 minutes on a fast laptop, and a shared CI runner
+    # is slower. 90 minutes was a wall this would have hit in June; 240 is
+    # headroom rather than an estimate, and a job that hangs still fails the
+    # same day rather than burning six hours of the GitHub maximum.
+    timeout-minutes: 240
 
     steps:
       - uses: actions/checkout@v7
