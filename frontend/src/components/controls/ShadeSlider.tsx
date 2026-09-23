@@ -13,10 +13,11 @@ const STEP = 0.5
 const MIN_ALPHA = -MAX_ALPHA
 
 // Amber on the left, indigo on the right, and the map's own two colours at the
-// ends. Pale through the middle, because the middle is where the preference
-// stops mattering and the walk is simply the short one.
-const TRACK = 'linear-gradient(90deg, #e8963c 0%, #f0c894 32%, #ded9d2 50%,'
-    + ' #9a9ac4 68%, #3b3b6d 100%)'
+// ends. Quiet through the middle, because the middle is where the preference
+// stops mattering and the walk is simply the short one. Written in index.css's
+// variables so the Night theme repaints it along with everything else.
+const TRACK = 'linear-gradient(90deg, var(--sun) 0%, var(--track-sun-soft) 32%,'
+    + ' var(--track-neutral) 50%, var(--track-shade-soft) 68%, var(--shade) 100%)'
 
 function describe(alpha: number): string {
     if (alpha === 0) return 'shortest path'

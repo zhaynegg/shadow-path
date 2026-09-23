@@ -6,6 +6,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#cccccc" />
     <meta name="description" content="Walk Astana in the shade — or in the sun. Routes weighted by where buildings and trees actually cast shadow, hour by hour." />
+    <!-- Day or Night, decided before anything is drawn. Left to React, the page
+         would paint Day first and then flash to Night for anyone whose device
+         is dark. The same rule as pickTheme in src/lib/theme.ts, and the same
+         storage key: a stored choice wins, otherwise follow the device. -->
+    <script>
+      (function () {
+        var stored = null
+        try { stored = localStorage.getItem('shadow-path-theme') } catch (e) {}
+        var night = stored === 'night' || stored === 'light'
+          ? stored === 'night'
+          : window.matchMedia('(prefers-color-scheme: dark)').matches
+        document.documentElement.dataset.theme = night ? 'night' : 'light'
+        if (night) document.querySelector('meta[name="theme-color"]').setAttribute('content', '#141414')
+      })()
+    </script>
     <!-- Inter, with the system stack behind it in index.css: if this never
          arrives the page is still typeset, only in the platform's own face. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />

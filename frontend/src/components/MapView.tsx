@@ -2,11 +2,12 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import * as maplibregl from 'maplibre-gl'
 import { useRef, useEffect, useState } from 'react'
 import { Protocol } from 'pmtiles'
-import { layers, GRAYSCALE } from '@protomaps/basemaps'
+import { layers, BLACK, GRAYSCALE, type Flavor } from '@protomaps/basemaps'
 import TimeSlider from './controls/TimeSlider'
 import ShadeSlider from './controls/ShadeSlider'
 import SearchBox from './controls/SearchBox'
 import LocateButton from './controls/LocateButton'
+import ThemeButton from './controls/ThemeButton'
 import RouteSummary from './RouteSummary'
 import DeparturePlanner from './DeparturePlanner'
 import type { Place } from '../api/geocode'
@@ -19,6 +20,7 @@ import {
 } from '../lib/stamps'
 import { footprintAt } from '../lib/footprint'
 import { COARSE_M, outOfReach, roughly, type Fix } from '../lib/locate'
+import { currentTheme, useTheme, type Theme } from '../lib/theme'
 
 // What the backend last said, and which request it was saying it about. Either
 // a plan or a message, never both -- a failed request has no route to draw.
@@ -46,13 +48,66 @@ const INITIAL_ZOOM = 14
 // the drag to settle.
 const DEBOUNCE_MS = 150
 
-const ROUTE_COLOUR = '#2563eb'
-const BASELINE_COLOUR = '#9ca3af'
+// Every colour the map paints that changes with the theme. index.css holds the
+// same values for the panels -- --route, --baseline, --shade, --canopy -- and
+// the two have to agree: a panel that quotes the map in a different blue has
+// taught the reader a second colour language.
+type Palette = {
+    // The Protomaps flavour under everything: grey by day, near-black at night.
+    basemap: Flavor,
+    route: string,
+    baseline: string,
+    shadow: string,
+    canopy: string,
+    building: string,
+    buildingOutline: string,
+    water: string,
+    waterLine: string,
+}
+
+const PALETTES: Record<Theme, Palette> = {
+    light: {
+        basemap: GRAYSCALE,
+        route: '#2563eb',
+        baseline: '#9ca3af',
+        // Hue carries what kind of shade it is, opacity carries how much of it
+        // there is. Keeping those on separate channels is what lets a tree read
+        // as a tree without overstating how dark it is.
+        shadow: '#3b3b6d',
+        canopy: '#2f6e46',
+        // Warm, and lighter than the #cccccc ground, because everything shaded
+        // on this map is cool and darker. Warm against cool separates a
+        // building from a shadow before any difference in value has to, which
+        // matters at the zoom where a footprint is only a few pixels across.
+        building: '#f4f1ea',
+        buildingOutline: '#b3a897',
+        // The only thing on this map that is neither shade, structure, nor
+        // route. Muted on purpose: a saturated lake would compete with the one
+        // line the reader is actually meant to follow.
+        water: '#a6c6da',
+        waterLine: '#8cb0c6',
+    },
+    night: {
+        basemap: BLACK,
+        route: '#6b9bff',
+        baseline: '#8a92a2',
+        // On a near-black ground nothing can be darker, so here shade is a cool
+        // tint lighter than the street -- and it is the hue, indigo against the
+        // warm buildings, that says "shade". The legend matters more at night.
+        shadow: '#8f8fe8',
+        canopy: '#5fb784',
+        building: '#36332e',
+        buildingOutline: '#524c43',
+        water: '#1f3440',
+        waterLine: '#2c4a5c',
+    },
+}
 
 // The two ends of the walk, and the same two colours the A and B pins are drawn
 // in -- --start and --end in index.css. Deliberately not the route's blue: the
 // building you are leaving from is not part of the line you walk along, and
-// giving them one colour would say that it was.
+// giving them one colour would say that it was. The same in both themes: the
+// pins carry a white letter, and a lighter green would lose it.
 const START_COLOUR = '#15803d'
 const END_COLOUR = '#b91c1c'
 
@@ -86,53 +141,50 @@ const shadowTiles = (time: string) => `pmtiles:///shadows/${stem(time)}.pmtiles`
 const shadowSource = (time: string) => `shadows-${stem(time)}`
 const shadowLayer = (time: string) => `shadow-${stem(time)}`
 
-// Hue carries what kind of shade it is, opacity carries how much of it there
-// is. Keeping those on separate channels is what lets a tree read as a tree
-// without overstating how dark it is.
-const SHADOW_COLOUR = '#3b3b6d'
-const CANOPY_COLOUR = '#2f6e46'
+// How much shade, whichever colour it is drawn in. The same in both themes.
 const SHADOW_OPACITY = 0.38
 
 // A crown is not a wall. Tiles tag each blob 'solid' or 'canopy', and canopy is
 // drawn through the same factor the router weights it by -- CANOPY_OPACITY in
 // core/trees.py. If you change one, change the other: a map that shades a
 // tree-lined street darker than the route thinks it is, is lying to the reader.
-// The green above is free of that: it changes which shade you are looking at,
-// never how much of it there is.
+// The palette's green is free of that: it changes which shade you are looking
+// at, never how much of it there is.
 const CANOPY_OPACITY = 0.7
 const FILL_OPACITY: maplibregl.ExpressionSpecification = [
     'case', ['==', ['get', 'kind'], 'canopy'],
     SHADOW_OPACITY * CANOPY_OPACITY,
     SHADOW_OPACITY,
 ]
-const FILL_COLOUR: maplibregl.ExpressionSpecification = [
+const fillColour = (palette: Palette): maplibregl.ExpressionSpecification => [
     'case', ['==', ['get', 'kind'], 'canopy'],
-    CANOPY_COLOUR,
-    SHADOW_COLOUR,
+    palette.canopy,
+    palette.shadow,
 ]
 
-// Warm, and lighter than the #cccccc ground, because everything shaded on this
-// map is cool and darker. Warm against cool separates a building from a shadow
-// before any difference in value has to, which matters at the zoom where a
-// footprint is only a few pixels across.
-const BUILDING_COLOUR = '#f4f1ea'
-const BUILDING_OUTLINE = '#b3a897'
 const BUILDING_FILTER: maplibregl.ExpressionSpecification =
     ['in', ['get', 'kind'], ['literal', ['building', 'building_part']]]
 
-// The only thing on this map that is neither shade, structure, nor route.
-// Muted on purpose: the route is #2563eb, and a saturated lake would compete
-// with the one line the reader is actually meant to follow.
-const WATER_COLOUR = '#a6c6da'
-const WATER_LINE_COLOUR = '#8cb0c6'
 const WATER_LAYERS = new Set(['water', 'water_stream', 'water_river'])
 
-const blueWater = (layer: maplibregl.LayerSpecification): maplibregl.LayerSpecification => {
-    if (!WATER_LAYERS.has(layer.id)) return layer
-    if (layer.type === 'line') return { ...layer, paint: { ...layer.paint, 'line-color': WATER_LINE_COLOUR } }
-    if (layer.type === 'fill') return { ...layer, paint: { ...layer.paint, 'fill-color': WATER_COLOUR } }
-    return layer
-}
+const blueWater = (palette: Palette) =>
+    (layer: maplibregl.LayerSpecification): maplibregl.LayerSpecification => {
+        if (!WATER_LAYERS.has(layer.id)) return layer
+        if (layer.type === 'line') return { ...layer, paint: { ...layer.paint, 'line-color': palette.waterLine } }
+        if (layer.type === 'fill') return { ...layer, paint: { ...layer.paint, 'fill-color': palette.water } }
+        return layer
+    }
+
+// The basemap under the shadows, in one theme. Its buildings layer is dropped
+// and redrawn above the shadows instead -- see buildingLayers.
+const basemapLayers = (palette: Palette) =>
+    layers('protomaps', palette.basemap)
+        .filter(layer => layer.id !== 'buildings')
+        .map(blueWater(palette))
+
+// Street and place names, over everything including the route.
+const labelLayers = (palette: Palette) =>
+    layers('protomaps', palette.basemap, { labelsOnly: true, lang: 'en' })
 
 // Buildings are drawn after the shadows, not before, and that is the whole
 // reason a building used to be the same colour as one. cast_shadow unions the
@@ -142,14 +194,14 @@ const blueWater = (layer: maplibregl.LayerSpecification): maplibregl.LayerSpecif
 // this is a ground-plane model, and shade on a roof is not somewhere anybody
 // walks. Shadows now land on the streets, which is the only place they are
 // about.
-const buildingLayers = [
+const buildingLayers = (palette: Palette) => [
     {
         id: 'buildings',
         type: 'fill' as const,
         source: 'protomaps',
         'source-layer': 'buildings',
         filter: BUILDING_FILTER,
-        paint: { 'fill-color': BUILDING_COLOUR },
+        paint: { 'fill-color': palette.building },
     },
     {
         // An outline only once footprints are big enough to have a shape worth
@@ -161,11 +213,38 @@ const buildingLayers = [
         filter: BUILDING_FILTER,
         minzoom: 15,
         paint: {
-            'line-color': BUILDING_OUTLINE,
+            'line-color': palette.buildingOutline,
             'line-width': ['interpolate', ['linear'], ['zoom'], 15, 0.3, 18, 1] as maplibregl.ExpressionSpecification,
         },
     },
 ]
+
+type PaintName = Parameters<maplibregl.Map['setPaintProperty']>[1]
+type PaintValue = Parameters<maplibregl.Map['setPaintProperty']>[2]
+
+// A built map, repainted in another theme. Rebuilding the style would be
+// simpler to write and would throw away the camera, the route and the pins --
+// so instead every colour is set again in place. The basemap flavours share
+// their layer ids and differ only in values, which is what lets the new
+// flavour's paint be copied across property by property.
+const repaint = (map: maplibregl.Map, palette: Palette, stamps: string[]) => {
+    for (const layer of [...basemapLayers(palette), ...labelLayers(palette)]) {
+        if (!layer.paint || !map.getLayer(layer.id)) continue
+        // Object.entries forgets that these keys are paint property names, so
+        // they are told again. They came out of a paint object, so they are.
+        for (const [property, value] of Object.entries(layer.paint)) {
+            map.setPaintProperty(layer.id, property as PaintName, value as PaintValue)
+        }
+    }
+
+    for (const stamp of stamps) {
+        map.setPaintProperty(shadowLayer(stamp), 'fill-color', fillColour(palette))
+    }
+    map.setPaintProperty('buildings', 'fill-color', palette.building)
+    map.setPaintProperty('buildings-outline', 'line-color', palette.buildingOutline)
+    map.setPaintProperty('baseline-line', 'line-color', palette.baseline)
+    map.setPaintProperty('route-line', 'line-color', palette.route)
+}
 
 // A source wants a FeatureCollection; a route is a bare geometry until wrapped.
 const asFeature = (geometry: LineGeometry | undefined) =>
@@ -189,6 +268,8 @@ function MapView() {
     const [time, setTime] = useState(() => nearestStamp(cityMinutes(), WHOLE_HOURS))
     const [alpha, setAlpha] = useState(INITIAL_ALPHA)
     const [points, setPoints] = useState<LatLon[]>([])
+    const [theme, setTheme] = useTheme()
+    const palette = PALETTES[theme]
 
     // What the locate button last did, or null if it has nothing to say.
     const [located, setLocated] = useState<Located | null>(null)
@@ -371,6 +452,24 @@ function MapView() {
         return () => clearTimeout(timer)
     }, [time, manifest])
 
+    // --- the map follows the theme ------------------------------------------
+    useEffect(() => {
+        const map = mapRef.current
+        if (!map) return
+
+        const paint = () => repaint(map, PALETTES[theme], manifest?.times ?? [])
+
+        // Until the style has loaded there are no layers to set colours on. The
+        // style was built in the theme showing at the time, but the reader may
+        // have switched in the second it takes to arrive -- so paint then.
+        if (map.getLayer('route-line')) {
+            paint()
+            return
+        }
+        map.once('style.load', paint)
+        return () => { map.off('style.load', paint) }
+    }, [theme, manifest])
+
     // --- ask the backend for a route ---------------------------------------
     useEffect(() => {
         // requestKey is null in exactly the cases these guards cover; they are
@@ -540,6 +639,11 @@ function MapView() {
         // what the code already guarantees.
         const tileLayer = manifest?.layer ?? ''
 
+        // Read off the page rather than from the `theme` state: this effect
+        // builds the map once and must not rebuild it when the theme changes.
+        // The effect above repaints it instead.
+        const colours = PALETTES[currentTheme()]
+
         const map = new maplibregl.Map({
             container: containerRef.current,
             style: {
@@ -565,11 +669,7 @@ function MapView() {
                     endpoints: { type: 'geojson', data: EMPTY },
                 },
                 layers: [
-                    // Its buildings layer is dropped and redrawn above the
-                    // shadows instead -- see buildingLayers.
-                    ...layers('protomaps', GRAYSCALE)
-                        .filter(layer => layer.id !== 'buildings')
-                        .map(blueWater),
+                    ...basemapLayers(colours),
                     ...stamps.map(stamp => ({
                         id: shadowLayer(stamp),
                         type: 'fill' as const,
@@ -581,11 +681,11 @@ function MapView() {
                             visibility: (stamp === initialTimeRef.current ? 'visible' : 'none') as 'visible' | 'none',
                         },
                         paint: {
-                            'fill-color': FILL_COLOUR,
+                            'fill-color': fillColour(colours),
                             'fill-opacity': FILL_OPACITY,
                         },
                     })),
-                    ...buildingLayers,
+                    ...buildingLayers(colours),
                     // Over the buildings, under the route. A pin says where you
                     // are to within a few metres; tinting the footprint it
                     // stands on says which door, which is the thing somebody
@@ -620,7 +720,7 @@ function MapView() {
                         type: 'line',
                         source: 'baseline',
                         paint: {
-                            'line-color': BASELINE_COLOUR,
+                            'line-color': colours.baseline,
                             'line-width': 3,
                             'line-dasharray': [2, 2],
                         },
@@ -631,12 +731,12 @@ function MapView() {
                         source: 'route',
                         layout: { 'line-cap': 'round', 'line-join': 'round' },
                         paint: {
-                            'line-color': ROUTE_COLOUR,
+                            'line-color': colours.route,
                             'line-width': 5,
                             'line-opacity': 0.9,
                         },
                     },
-                    ...layers('protomaps', GRAYSCALE, { labelsOnly: true, lang: 'en' }),
+                    ...labelLayers(colours),
                 ],
                 glyphs: 'https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf',
             },
@@ -698,6 +798,7 @@ function MapView() {
                         at. */}
                     <div className="brand-sub">Astana{manifest && ` \u00b7 ${prettyDate(manifest.date)}`}</div>
                 </div>
+                <ThemeButton theme={theme} onChange={setTheme} />
             </header>
 
             {/* Clicking the map only works if you can already find the place on
@@ -771,10 +872,10 @@ function MapView() {
                         says so anywhere else. */}
                     <div className="legend">
                         <span className="legend-item">
-                            <span className="swatch" style={{ background: SHADOW_COLOUR }} />building
+                            <span className="swatch" style={{ background: palette.shadow }} />building
                         </span>
                         <span className="legend-item">
-                            <span className="swatch" style={{ background: CANOPY_COLOUR }} />tree
+                            <span className="swatch" style={{ background: palette.canopy }} />tree
                         </span>
                     </div>
                     <div className="dock-actions">

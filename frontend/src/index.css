@@ -11,18 +11,33 @@
    2. Panels are glass, not paint. They float over a map whose whole job is to
       be looked at, so they stay translucent and let the city show through
       rather than cutting a white hole in it.
+
+   There are two themes, Day (:root) and Night ([data-theme="night"] on
+   <html>, set by the script in index.html and by lib/theme.ts). Every colour a
+   rule paints is a variable below, so Night is one block of new values and no
+   second set of rules.
    ========================================================================= */
 
 :root {
+    color-scheme: light;
+
     --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
         "Helvetica Neue", Arial, sans-serif;
+
+    /* The basemap's own ground. The body is painted with it so first paint is
+       not white, and MapView's palette has to agree with it. */
+    --map-ground: #cccccc;
 
     /* Ink is warm-neutral rather than pure grey: the basemap ground is #cccccc
        and the buildings are #f4f1ea, and a cold black panel sits on top of that
        like a sticker. */
     --ink: #1c1d21;
     --ink-2: #5c6270;
-    --ink-3: #8b919e;
+    /* The labels and captions. It used to be #8b919e, which is 2.5:1 on glass
+       over a shaded street -- too faint for 10.5px text. This is the lightest
+       grey that still reads at 4.5:1 there, so labels now stand apart from
+       sentences by size and case rather than by being hard to read. */
+    --ink-3: #616775;
 
     /* Glass. The saturate() is what keeps the map underneath from going milky
        when it is blurred -- blur alone desaturates, and the city loses its
@@ -39,6 +54,11 @@
     --surface-2: rgba(28, 29, 33, 0.05);
     --surface-3: rgba(28, 29, 33, 0.09);
 
+    /* Buttons on glass: resting, hovered. */
+    --control-bg: rgba(255, 255, 255, 0.7);
+    --control-hover: #fff;
+    --control-brd-hover: rgba(28, 29, 33, 0.18);
+
     /* Straight off the map. See MapView.tsx. */
     --route: #2563eb;
     --baseline: #9ca3af;
@@ -49,11 +69,123 @@
     --start: #15803d;
     --end: #b91c1c;
 
+    /* The route's blue, thinned, for the one button that acts on a route. */
+    --route-tint: rgba(37, 99, 235, 0.09);
+    --route-tint-hover: rgba(37, 99, 235, 0.15);
+    --route-line: rgba(37, 99, 235, 0.28);
+
+    /* Solid, not the half-transparent blue it used to be: at 50% it was 2:1
+       against the glass, and a focus ring has to reach 3:1 to be found. */
+    --focus-ring: #2563eb;
+
+    --danger-ink: #7f1d1d;
+    --danger-soft: rgba(185, 28, 28, 0.09);
+    --danger-line: rgba(185, 28, 28, 0.18);
+
+    /* The note that says the sun is down. */
+    --night: #1d2036;
+    --night-hi: #2b2f4e;
+    --night-ink: #e8e9f4;
+
+    /* Letters on the A and B pins. */
+    --on-color: #fff;
+
+    /* The preference slider's pale middle, and the tick at its zero. */
+    --track-sun-soft: #f0c894;
+    --track-neutral: #ded9d2;
+    --track-shade-soft: #9a9ac4;
+    --detent: rgba(28, 29, 33, 0.28);
+
+    /* The brand mark is the product in one square, and the same square in
+       every theme -- so it has colours of its own rather than --sun and
+       --shade, which Night lightens. */
+    --mark-sun: #e8963c;
+    --mark-mid: #b4763f;
+    --mark-shade: #3b3b6d;
+
+    --mark-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35),
+                   0 2px 6px rgba(59, 59, 109, 0.3);
+    --track-inset: inset 0 0 0 1px rgba(28, 29, 33, 0.1),
+                   inset 0 1px 2px rgba(28, 29, 33, 0.14);
+    --thumb-shadow: 0 1px 2px rgba(28, 29, 33, 0.2),
+                    0 3px 8px -2px rgba(28, 29, 33, 0.28);
+    --pin-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3),
+                  0 1px 3px rgba(28, 29, 33, 0.3);
+    --marker-shadow: 0 2px 5px rgba(28, 29, 33, 0.35);
+
     --r-sm: 7px;
     --r-md: 11px;
     --r-lg: 16px;
 
     --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* Night: the same rules, repainted for a dark map. The hues keep their meaning
+   and are lifted until they read on dark glass -- every text colour here holds
+   4.5:1 over any ground, every mark 3:1. The pins keep their Day fills so the
+   white letter stays legible, and get a white ring instead so the disc can be
+   found on a dark panel. */
+:root[data-theme="night"] {
+    color-scheme: dark;
+
+    --map-ground: #141414;
+
+    --ink: #eceef3;
+    --ink-2: #b3b9c6;
+    --ink-3: #9aa1b0;
+
+    --panel-bg: rgba(30, 32, 40, 0.78);
+    --panel-brd: rgba(255, 255, 255, 0.1);
+    --panel-hi: rgba(255, 255, 255, 0.08);
+    --panel-shadow:
+        0 1px 2px rgba(0, 0, 0, 0.3),
+        0 6px 16px -4px rgba(0, 0, 0, 0.4),
+        0 24px 48px -20px rgba(0, 0, 0, 0.6);
+
+    --surface-2: rgba(255, 255, 255, 0.06);
+    --surface-3: rgba(255, 255, 255, 0.12);
+
+    --control-bg: rgba(255, 255, 255, 0.08);
+    --control-hover: rgba(255, 255, 255, 0.16);
+    --control-brd-hover: rgba(255, 255, 255, 0.24);
+
+    --route: #6b9bff;
+    --baseline: #8a92a2;
+    --shade: #8f8fe8;
+    --canopy: #5fb784;
+    --sun: #f0a656;
+    /* Lifted to read as text. --end stays dark red: it carries a white B. */
+    --danger: #f58b8b;
+
+    --route-tint: rgba(107, 155, 255, 0.16);
+    --route-tint-hover: rgba(107, 155, 255, 0.24);
+    --route-line: rgba(107, 155, 255, 0.4);
+    --focus-ring: #9dbcff;
+
+    --danger-ink: #fcb4b4;
+    --danger-soft: rgba(245, 139, 139, 0.14);
+    --danger-line: rgba(245, 139, 139, 0.32);
+
+    /* Lighter than Day's, or it would vanish into a dark dock. */
+    --night: #3c4078;
+    --night-hi: #50559a;
+    --night-ink: #f0f1fa;
+
+    --track-sun-soft: #a8784a;
+    --track-neutral: #4d4c55;
+    --track-shade-soft: #5f5fa6;
+    --detent: rgba(255, 255, 255, 0.45);
+
+    --mark-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35),
+                   0 2px 6px rgba(0, 0, 0, 0.45);
+    --track-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+                   inset 0 1px 2px rgba(0, 0, 0, 0.4);
+    --thumb-shadow: 0 1px 2px rgba(0, 0, 0, 0.4),
+                    0 3px 8px -2px rgba(0, 0, 0, 0.5);
+    --pin-shadow: 0 0 0 1.5px #fff,
+                  inset 0 1px 0 rgba(255, 255, 255, 0.3),
+                  0 1px 3px rgba(0, 0, 0, 0.5);
+    --marker-shadow: 0 2px 5px rgba(0, 0, 0, 0.6);
 }
 
 * { box-sizing: border-box; }
@@ -71,7 +203,7 @@ body {
     font-feature-settings: "ss01", "cv05";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background: #cccccc; /* the basemap ground, so first paint is not white */
+    background: var(--map-ground); /* so first paint is not white */
 }
 
 /* --- shell ------------------------------------------------------------- */
@@ -123,9 +255,8 @@ body {
     display: grid;
     place-items: center;
     /* Sun to shade, on the diagonal. The mark is the product in one square. */
-    background: linear-gradient(135deg, var(--sun) 0%, #b4763f 42%, var(--shade) 100%);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35),
-                0 2px 6px rgba(59, 59, 109, 0.3);
+    background: linear-gradient(135deg, var(--mark-sun) 0%, var(--mark-mid) 42%, var(--mark-shade) 100%);
+    box-shadow: var(--mark-shadow);
 }
 
 .brand-title {
@@ -186,7 +317,7 @@ body {
    metrics and nobody else's palette. */
 .search-input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
 
-.search-input:focus-visible { box-shadow: inset 0 0 0 2px var(--route); }
+.search-input:focus-visible { box-shadow: inset 0 0 0 2px var(--focus-ring); }
 
 /* Its own sheet of glass, below the field. It is not inside the panel: a list
    of six results is taller than the field it drops from, and a panel that grew
@@ -320,16 +451,14 @@ body {
     height: 8px;
     border-radius: 999px;
     background: var(--track, var(--surface-3));
-    box-shadow: inset 0 0 0 1px rgba(28, 29, 33, 0.1),
-                inset 0 1px 2px rgba(28, 29, 33, 0.14);
+    box-shadow: var(--track-inset);
 }
 
 .range::-moz-range-track {
     height: 8px;
     border-radius: 999px;
     background: var(--track, var(--surface-3));
-    box-shadow: inset 0 0 0 1px rgba(28, 29, 33, 0.1),
-                inset 0 1px 2px rgba(28, 29, 33, 0.14);
+    box-shadow: var(--track-inset);
 }
 
 .range::-webkit-slider-thumb {
@@ -341,8 +470,7 @@ body {
     border-radius: 50%;
     background: #fff;
     border: 1px solid rgba(28, 29, 33, 0.16);
-    box-shadow: 0 1px 2px rgba(28, 29, 33, 0.2),
-                0 3px 8px -2px rgba(28, 29, 33, 0.28);
+    box-shadow: var(--thumb-shadow);
     transition: transform 120ms var(--ease), box-shadow 120ms var(--ease);
 }
 
@@ -352,8 +480,7 @@ body {
     border-radius: 50%;
     background: #fff;
     border: 1px solid rgba(28, 29, 33, 0.16);
-    box-shadow: 0 1px 2px rgba(28, 29, 33, 0.2),
-                0 3px 8px -2px rgba(28, 29, 33, 0.28);
+    box-shadow: var(--thumb-shadow);
     transition: transform 120ms var(--ease), box-shadow 120ms var(--ease);
 }
 
@@ -366,12 +493,10 @@ body {
    slider with no visible focus is unusable without a mouse. */
 .range:focus { outline: none; }
 .range:focus-visible::-webkit-slider-thumb {
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35),
-                0 1px 2px rgba(28, 29, 33, 0.2);
+    box-shadow: 0 0 0 3px var(--focus-ring), var(--thumb-shadow);
 }
 .range:focus-visible::-moz-range-thumb {
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35),
-                0 1px 2px rgba(28, 29, 33, 0.2);
+    box-shadow: 0 0 0 3px var(--focus-ring), var(--thumb-shadow);
 }
 
 /* The detent under the shade slider's centre: alpha 0 is "shortest path", a
@@ -386,7 +511,7 @@ body {
     height: 8px;
     margin-left: -0.5px;
     border-radius: 1px;
-    background: rgba(28, 29, 33, 0.28);
+    background: var(--detent);
     pointer-events: none;
 }
 
@@ -403,15 +528,15 @@ body {
 }
 
 .note-night {
-    color: #e8e9f4;
-    background: linear-gradient(135deg, #2b2f4e, #1d2036);
+    color: var(--night-ink);
+    background: linear-gradient(135deg, var(--night-hi), var(--night));
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .note-error {
-    color: #7f1d1d;
-    background: rgba(185, 28, 28, 0.09);
-    box-shadow: inset 0 0 0 1px rgba(185, 28, 28, 0.18);
+    color: var(--danger-ink);
+    background: var(--danger-soft);
+    box-shadow: inset 0 0 0 1px var(--danger-line);
 }
 
 /* Not a failure, so not red: a fix good to a kilometre worked exactly as asked.
@@ -435,7 +560,7 @@ body {
     padding: 6px 12px;
     border-radius: 999px;
     border: 1px solid var(--panel-brd);
-    background: rgba(255, 255, 255, 0.7);
+    background: var(--control-bg);
     cursor: pointer;
     transition: background 120ms var(--ease), color 120ms var(--ease),
                 border-color 120ms var(--ease), transform 120ms var(--ease);
@@ -443,8 +568,8 @@ body {
 
 .btn:hover:not(:disabled) {
     color: var(--ink);
-    background: #fff;
-    border-color: rgba(28, 29, 33, 0.18);
+    background: var(--control-hover);
+    border-color: var(--control-brd-hover);
 }
 
 .btn:active:not(:disabled) { transform: translateY(1px); }
@@ -455,7 +580,7 @@ body {
 }
 
 .btn:focus-visible {
-    outline: 2px solid rgba(37, 99, 235, 0.5);
+    outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
 }
 
@@ -471,6 +596,11 @@ body {
     padding: 0;
     flex-shrink: 0;
 }
+
+/* The theme switch, at the far end of the brand panel. On a phone the panel is
+   the width of the screen and this pushes it to the right edge; on a desktop the
+   panel is only as wide as its contents, and the auto margin costs nothing. */
+.brand-theme { margin-left: auto; }
 
 /* Full strength while the device thinks, against .btn:disabled's 0.45 -- it is
    working, not unavailable, and fading it says the opposite. */
@@ -588,9 +718,8 @@ body {
     place-items: center;
     font-size: 10px;
     font-weight: 700;
-    color: #fff;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3),
-                0 1px 3px rgba(28, 29, 33, 0.3);
+    color: var(--on-color);
+    box-shadow: var(--pin-shadow);
 }
 
 .pin-a { background: var(--start); }
@@ -818,7 +947,7 @@ body {
     padding: 8px 11px;
     border-radius: var(--r-md);
     border: 1px solid transparent;
-    background: rgba(37, 99, 235, 0.09);
+    background: var(--route-tint);
     color: var(--ink);
     font-size: 12.5px;
     text-align: left;
@@ -827,8 +956,8 @@ body {
 }
 
 .depart-pick:hover {
-    background: rgba(37, 99, 235, 0.15);
-    border-color: rgba(37, 99, 235, 0.28);
+    background: var(--route-tint-hover);
+    border-color: var(--route-line);
 }
 
 .depart-pick strong {
@@ -837,7 +966,7 @@ body {
 }
 
 .depart-pick:focus-visible {
-    outline: 2px solid rgba(37, 99, 235, 0.5);
+    outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
 }
 
@@ -878,7 +1007,7 @@ body {
     display: grid;
     place-items: center;
     border: 2px solid #fff;
-    box-shadow: 0 2px 5px rgba(28, 29, 33, 0.35);
+    box-shadow: var(--marker-shadow);
     cursor: pointer;
 }
 
@@ -935,6 +1064,18 @@ body {
 }
 
 .maplibregl-ctrl-attrib a { color: var(--ink-2); }
+
+/* The two pieces of maplibre furniture that paint literal light colours, and
+   its icons, which are dark SVGs drawn for a light button. */
+:root[data-theme="night"] .maplibregl-ctrl-group button:hover { background: var(--control-hover); }
+
+:root[data-theme="night"] .maplibregl-ctrl-attrib {
+    background: var(--panel-bg) !important;
+    color: var(--ink-2);
+}
+
+:root[data-theme="night"] .maplibregl-ctrl-icon,
+:root[data-theme="night"] .maplibregl-ctrl-attrib-button { filter: invert(1); }
 
 /* --- small screens ------------------------------------------------------ */
 
@@ -1015,7 +1156,7 @@ body {
     padding: 9px 15px;
     border-radius: 999px;
     font-size: 12.5px;
-    color: #7f1d1d;
+    color: var(--danger-ink);
     max-width: min(420px, calc(100vw - 32px));
 }
 
