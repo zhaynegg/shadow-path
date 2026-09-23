@@ -387,6 +387,21 @@ def test_route_declines_a_stamp_the_export_never_wrote(monkeypatch):
     clear_caches()
 
 
+def test_scores_on_disk_that_were_refused_are_not_called_missing(monkeypatch):
+    """What the live site said the first night the export ran in CI: "no
+    precomputed scores for 0 of the 22 stamps". All 22 were there, scored
+    against a different network, and the sentence sent a reader to look for
+    files rather than at the graph they were measured on.
+    """
+    monkeypatch.setattr(main.scores, "missing", lambda *args: [])
+
+    detail = main.no_scores(today()).detail
+
+    assert "0 of" not in detail
+    assert "different street network" in detail
+    assert "export_shadow_tiles.py" in detail
+
+
 def test_a_date_with_no_daylight_is_told_why_rather_than_sent_to_the_script(monkeypatch):
     """Astana never sees this, but both endpoints decline through one helper
     now, and the two reasons it declines for are not the same thing. Missing

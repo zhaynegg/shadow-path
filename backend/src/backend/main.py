@@ -225,6 +225,16 @@ def no_scores(date: dt.date) -> HTTPException:
             detail="The sun does not rise over Astana on that date.")
 
     absent = scores.missing(CACHE_DIR, GRAPH_RADIUS, date, times)
+    if not absent:
+        # Every file is there and `scores.load` turned them down anyway, so
+        # running the export again is only a fix if it scores the right graph.
+        # This used to say "no scores for 0 of the 22 stamps", which sent a
+        # reader looking for files that were sitting on disk.
+        return HTTPException(status_code=503,
+            detail=f"The scores for {date} are on disk but could not be used: unreadable, "
+                   f"or scored against a different street network than data/cache/streets. "
+                   f"Rebuild them with backend/scripts/export_shadow_tiles.py.")
+
     return HTTPException(status_code=503,
         detail=f"No precomputed scores for {len(absent)} of the {len(times)} stamps on "
                f"{date}. Run backend/scripts/export_shadow_tiles.py.")

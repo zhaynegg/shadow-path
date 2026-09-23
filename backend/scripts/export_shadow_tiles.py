@@ -26,13 +26,13 @@ import time
 from pathlib import Path
 
 import geopandas as gpd
-import osmnx as ox
+import numpy as np
 import pandas as pd
+import shapely
 
-from backend.config import CACHE_DIR, GRAPH_RADIUS, LAT, LON, TZ, today
-from backend.core import scores
+from backend.config import CACHE_DIR, CRS, GRAPH_RADIUS, LAT, LON, TZ, today
+from backend.core import scores, streets
 from backend.core.buildings import load_buildings
-from backend.core.graph import load_graph
 from backend.core.scoring import score_edges_layered
 from backend.core.shadows import SIMPLIFY_M, layered_field
 from backend.core.solar import daylight_times, sun_position
@@ -96,6 +96,29 @@ def shadow_layers(gdf: gpd.GeoDataFrame, date: dt.date, at: dt.time):
     if opaque is None and dappled is None:
         return None
     return opaque, dappled
+
+
+def routing_edges(cache_dir: Path) -> gpd.GeoDataFrame:
+    """The edges the API routes on, with their lines put back, to score against.
+
+    Read from the street tables rather than the graphml, because the scores are
+    only usable against the network they were measured on: `scores.load` turns
+    a file down below 99% of the edge index. The graphml is gitignored, so a CI
+    runner rebuilt it from live OpenStreetMap every night -- 155,500 edges
+    against the 152,734 the tables pinned on Sep 13, 98.5% in common -- and
+    the API refused every stamp it was handed. The tables are tracked, so this
+    is the same network on a laptop, on the runner, and on the server.
+    """
+    edges, _, shapes = streets.load(cache_dir, GRAPH_RADIUS)
+
+    # The shapes are one coordinate buffer and the offsets into it; shapely
+    # wants the edge each coordinate belongs to instead.
+    which = np.repeat(np.arange(len(shapes)), np.diff(shapes.start))
+    lines = shapely.linestrings(shapes.xy, indices=which)
+
+    # `edges` rather than its values: it carries the (u, v, key) index, and
+    # the index is what the scores are saved and matched by.
+    return gpd.GeoDataFrame(edges, geometry=lines, crs=CRS)
 
 
 def build_tiles(opaque, dappled, crs, at: dt.time, out_dir: Path, work_dir: Path) -> Path:
@@ -238,11 +261,11 @@ def main() -> None:
     wanted = daylight_times(LAT, LON, args.date, TZ)
     print(f"{len(wanted)} stamps, {wanted[0]:%H:%M}-{wanted[-1]:%H:%M}\n")
 
-    # The graph is loaded once, outside the loop: it is 50k nodes and every
-    # stamp scores the same edges against a different field.
+    # The edges are loaded once, outside the loop: every stamp scores the same
+    # 150k lines against a different field.
     edges = None
     if not args.no_scores:
-        edges = ox.graph_to_gdfs(load_graph(args.cache_dir, GRAPH_RADIUS), nodes=False)
+        edges = routing_edges(args.cache_dir)
         print(f"routing graph: {len(edges):,} edges within {GRAPH_RADIUS / 1000:.0f} km\n")
 
     written: dict[dt.time, Path] = {}

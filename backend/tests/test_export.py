@@ -11,6 +11,13 @@ import datetime as dt
 import importlib.util
 from pathlib import Path
 
+import geopandas as gpd
+import pandas as pd
+from shapely import LineString
+
+from backend.config import CRS
+from backend.core import scores, streets
+
 DATE = dt.date(2026, 9, 13)
 
 
@@ -143,3 +150,37 @@ def test_scores_only_does_not_delete_the_tilesets_it_never_cut(tmp_path, monkeyp
     export.finalise(args, written={}, scored=True)
 
     assert all(tileset.exists() for tileset in tilesets)
+
+
+def test_the_graph_it_scores_is_the_graph_the_api_routes_on(tmp_path):
+    """The contract that broke the first night this ran in CI.
+
+    The export scored a graphml the runner had rebuilt from live OpenStreetMap,
+    while the API routes on street tables pinned in git. 98.5% of their edges
+    agreed, `scores.load` wants 99%, and every stamp was refused. So the test
+    is the round trip the server does: scores written from routing_edges,
+    read back against the index the API itself loads.
+    """
+    index = pd.MultiIndex.from_tuples([(1, 2, 0), (2, 3, 0), (2, 3, 1)],
+                                      names=["u", "v", "key"])
+    lines = [LineString([(0, 0), (10, 0)]),
+             LineString([(10, 0), (10, 5), (10, 10)]),
+             LineString([(10, 0), (15, 5), (10, 10)])]
+    graph = gpd.GeoDataFrame({"length": [10.0, 10.0, 14.1]}, geometry=lines,
+                             index=index, crs=CRS)
+    nodes = pd.DataFrame({"x": [0.0, 10.0, 10.0], "y": [0.0, 0.0, 10.0]}, index=[1, 2, 3])
+    streets.save(tmp_path, export.GRAPH_RADIUS, graph, nodes)
+
+    edges = export.routing_edges(tmp_path)
+
+    # The lines come back whole, in the metres score_edges asserts on.
+    assert edges.crs == CRS
+    assert list(edges.geometry) == lines
+
+    edges["shade_fraction"] = [0.0, 0.5, 1.0]
+    scores.save(edges, tmp_path, export.GRAPH_RADIUS, DATE, dt.time(12, 0))
+    served = streets.load(tmp_path, export.GRAPH_RADIUS)[0].index
+    loaded = scores.load(tmp_path, export.GRAPH_RADIUS, DATE, dt.time(12, 0), served)
+
+    assert loaded is not None
+    assert loaded.tolist() == [0.0, 0.5, 1.0]

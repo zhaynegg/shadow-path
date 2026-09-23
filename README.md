@@ -716,6 +716,9 @@ already followed — *nothing in this repo can rebuild it*:
 
 - `data/cache/streets/` (6.9 MB) — the graph reduced to what the router reads.
   Its source, `walk-15000m.graphml`, is 65 MB and itself comes from Overpass.
+  The nightly export scores these tables too, not the graphml: a runner has no
+  graphml, rebuilt one from live OSM, and wrote scores 98.5% of whose edges
+  matched — under the 99% `scores.load` accepts, so the API refused them all.
 - `frontend/public/my_area.pmtiles` (14 MB) — a Protomaps extract of the bbox
   the map clamps to. The `.gitignore` entry carries the command to remake it.
 - `data/cache/astana_canopy_height.parquet` (15 MB) and the other caches.
