@@ -114,6 +114,13 @@ jobs:
       - name: Show what was built
         run: cat frontend/public/shadows/index.json
 
+      # Check the same files the deployed API will read, before replacing the
+      # rolling release. Successful geometry alone does not prove that the
+      # scores match the tracked street network.
+      - name: Validate routing scores
+        working-directory: backend
+        run: uv run python scripts/validate_runtime_assets.py
+
       - name: Upload the tiles
         uses: actions/upload-artifact@v7
         with:
@@ -164,6 +171,5 @@ jobs:
           for hook in "$API_HOOK" "$WEB_HOOK"; do
             if [ -n "$hook" ]; then curl -fsS -X POST "$hook" >/dev/null && echo "  triggered"; fi
           done
-          if [ -z "$API_HOOK$WEB_HOOK" ]; then
-            echo "no deploy hooks configured -- see render.yaml"
-          fi
+          if [ -z "$API_HOOK" ]; then echo "API deploy hook missing -- set RENDER_DEPLOY_HOOK_API to update live routing scores"; fi
+          if [ -z "$WEB_HOOK" ]; then echo "Web deploy hook missing -- set RENDER_DEPLOY_HOOK_WEB to update the live map"; fi

@@ -1,5 +1,6 @@
 import 'maplibre-gl/dist/maplibre-gl.css'
 import * as maplibregl from 'maplibre-gl'
+import mapWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { useRef, useEffect, useState } from 'react'
 import { Protocol } from 'pmtiles'
 import { layers, BLACK, GRAYSCALE, type Flavor } from '@protomaps/basemaps'
@@ -252,6 +253,10 @@ const asFeature = (geometry: LineGeometry | undefined) =>
         ? { type: 'FeatureCollection' as const, features: [{ type: 'Feature' as const, geometry, properties: {} }] }
         : EMPTY
 
+// MapLibre 6 loads its worker as a separate module. After Vite bundles the app,
+// its default sibling URL points at a file that was never emitted. Bundle the
+// worker and its imports explicitly, or production maps silently draw no tiles.
+maplibregl.setWorkerUrl(mapWorkerUrl)
 maplibregl.addProtocol('pmtiles', protocol.tile)
 
 function MapView() {

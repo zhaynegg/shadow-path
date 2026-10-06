@@ -730,11 +730,12 @@ release rather than the workflow artifact because an artifact needs an
 authenticated call and a run id, while a release asset has a stable public URL a
 build command can fetch.
 
-The two builds treat a missing fetch differently, on purpose. The API's is not
-fatal: without scores it still serves `/api/health` and declines routes with a
-message naming the export, which beats a service that will not start. The site's
-is fatal: a map with no shadow tiles looks broken rather than degraded, and a
-build that stops with that message is easier to read than a grey city.
+Both builds stop if their release download fails. The API build also checks
+every daylight stamp against the tracked street network with
+`scripts/validate_runtime_assets.py`. Scores from a fresh OSM download can be
+present on disk yet rejected by the router because their edge index differs.
+A failed build keeps the previous deployment running instead of replacing it
+with an API that passes `/api/health` but cannot create routes.
 
 ### First deploy
 
@@ -748,6 +749,23 @@ build that stops with that message is easier to read than a grey city.
 Renaming `shadow-path-api` means editing the rewrite destination in
 `render.yaml` to match — it is a literal URL, not a service reference.
 
+### Recovering a stale deployment
+
+If routing says `No precomputed scores for 0 of the ... stamps`, the files exist
+but are incompatible with the API's street network. Push the current code, then
+run **Shadow tiles** on `main` to rebuild the release using the tracked street
+tables. Redeploy both Render services after that run succeeds. Redeploying only
+the API can leave the browser asking for a date its newly downloaded scores no
+longer cover.
+
+Check `/shadows/index.json` on the live site to see its data date. A successful
+nightly workflow publishes a release; it updates Render only when both deploy
+hook secrets above are configured. The workflow reports each missing hook.
+
+For map changes, verify `npm run build` followed by `npm run preview`. The
+production bundle uses an explicit MapLibre module worker; a working development
+server alone does not verify that worker or the production map.
+
 ## Known gaps
 
 **Dependencies still to add:** `pydantic-settings`. `pytest`, `ruff` and
@@ -757,11 +775,6 @@ the KD-tree behind the neighbour height estimate, which both the API and the
 tile export reach through `load_buildings`.
 The timezone is hardcoded to UTC+5 in `config.py` — the documented shortcut
 while this is single-city, and `timezonefinder` is what replaces it.
-
-**Nothing is deployed.** The tiles are built nightly and uploaded as an
-artifact. Publishing them needs a decision about the backend too: GitHub Pages
-is static, so `/api/route` would 404 there and routing would not work until
-FastAPI is hosted somewhere.
 
 **The endpoint is never exercised against the real city.** `test_api.py` covers
 what a caller may ask for and what gets cached: the date bounds, the `alpha`

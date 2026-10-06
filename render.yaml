@@ -39,16 +39,16 @@ services:
     rootDir: backend
     healthCheckPath: /api/health
     buildCommand: |
+      set -eu
       pip install uv
       uv sync --frozen --no-dev
-      # Today's scored graph, from the nightly run. Not fatal if it is absent:
-      # the API answers /api/health either way and declines routes with a
-      # message naming the export, which is a far better failure than a
-      # service that will not start.
-      curl -fsSL "$RUNTIME_ASSETS_URL/scored.tar.gz" -o /tmp/scored.tar.gz \
-        && mkdir -p ../data/cache/scored \
-        && tar -xzf /tmp/scored.tar.gz -C ../data/cache/scored \
-        || echo "WARNING: no scored graphs fetched -- routes will decline until the nightly run lands"
+      # A healthy process without usable scores cannot create routes. Keep the
+      # last deployment running if the release is missing or its scores were
+      # built against a different street network.
+      curl -fsSL --retry 3 "$RUNTIME_ASSETS_URL/scored.tar.gz" -o /tmp/scored.tar.gz
+      mkdir -p ../data/cache/scored
+      tar -xzf /tmp/scored.tar.gz -C ../data/cache/scored
+      uv run python scripts/validate_runtime_assets.py
     startCommand: uv run uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
@@ -66,19 +66,14 @@ services:
     rootDir: frontend
     staticPublishPath: dist
     buildCommand: |
+      set -eu
       npm ci
       npm run build
-      # The tiles are a third of a gigabyte and rebuilt nightly, so they are
-      # not in the repo. Not fatal if they are missing: MapView builds the map
-      # on an answer rather than on success, so a site without them is Astana
-      # with no shadows on it and a note saying why -- which is what the very
-      # first deploy looks like, until that night's run publishes. It used to
-      # stop the build here, on the theory that a shadowless map looks broken;
-      # the map was blank without a manifest at the time, so that was true.
-      curl -fsSL "$RUNTIME_ASSETS_URL/shadows.tar.gz" -o /tmp/shadows.tar.gz \
-        && mkdir -p dist/shadows \
-        && tar -xzf /tmp/shadows.tar.gz -C dist/shadows \
-        || echo "WARNING: no shadow tiles fetched -- the map will draw without them until the nightly run publishes" 
+      # The map and API must use the same nightly release. A failed download
+      # must not silently publish a site without its routing date and tiles.
+      curl -fsSL --retry 3 "$RUNTIME_ASSETS_URL/shadows.tar.gz" -o /tmp/shadows.tar.gz
+      mkdir -p dist/shadows
+      tar -xzf /tmp/shadows.tar.gz -C dist/shadows
     envVars:
       - key: RUNTIME_ASSETS_URL
         value: https://github.com/zhaynegg/shadow-path/releases/download/tiles-latest
