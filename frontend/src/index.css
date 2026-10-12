@@ -225,6 +225,10 @@ button, input, select, a { -webkit-tap-highlight-color: transparent; }
 .maplibregl-ctrl-scale { background: var(--panel-bg) !important; border-color: var(--ink-3) !important; color: var(--ink-2); font: 500 10px/1.6 var(--font-sans) !important; padding: 0 6px 1px; }
 .maplibregl-ctrl-attrib { background: var(--panel-bg) !important; color: var(--ink-2); font-size: 10px !important; }
 .maplibregl-ctrl-attrib a { color: var(--ink-2); }
+.place-tooltip { pointer-events: none; }
+.place-tooltip .maplibregl-popup-content { padding: 9px 12px; border-radius: 8px; box-shadow: var(--panel-shadow); font: 12px/1.4 var(--font-sans); color: var(--ink); }
+.place-tooltip strong, .place-tooltip span { display: block; }
+.place-tooltip span { margin-top: 2px; color: var(--ink-2); font-size: 11px; }
 .status { top: 24px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 9px; max-width: min(400px, calc(100vw - 48px)); padding: 10px 13px; color: var(--danger-ink); font-size: 12px; z-index: 4; }
 .status-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--danger); }
 

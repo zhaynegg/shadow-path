@@ -10,7 +10,7 @@ import SearchBox from './controls/SearchBox'
 import LocateButton from './controls/LocateButton'
 import RouteSummary from './RouteSummary'
 import DeparturePlanner from './DeparturePlanner'
-import type { Place } from '../api/geocode'
+import { loadIndex, type Place } from '../api/geocode'
 import {
     fetchDayScan, fetchPreference, fetchRoute, fetchShadowManifest,
     type DayPlan, type LatLon, type LineGeometry, type Preference, type RoutePlan, type ShadowManifest,
@@ -20,6 +20,9 @@ import {
 } from '../lib/stamps'
 import { footprintAt } from '../lib/footprint'
 import { COARSE_M, outOfReach, roughly, type Fix } from '../lib/locate'
+import { mapPlaces } from '../lib/mapPlaces'
+import { installPlaceIcons } from '../lib/placeIcons'
+import { PLACE_LAYER_IDS, PLACE_SOURCE, placeLayers } from '../lib/placeLayers'
 
 // What the backend last said, and which request it was saying it about. Either
 // a plan or a message, never both -- a failed request has no route to draw.
@@ -532,7 +535,9 @@ function MapView() {
                 // building -- zoomed out they arrive packed many to a
                 // MultiPolygon, and drawing the whole of what was returned
                 // tinted every footprint in the district.
-                const shape = footprintAt(hit?.geometry, lon, lat)
+                const geometry = hit?.geometry
+                const shape = footprintAt(geometry?.type === 'Polygon' || geometry?.type === 'MultiPolygon'
+                    ? geometry : undefined, lon, lat)
                 return shape ? [{
                     type: 'Feature' as const,
                     geometry: shape,
@@ -636,6 +641,7 @@ function MapView() {
                     baseline: { type: 'geojson', data: EMPTY },
                     route: { type: 'geojson', data: EMPTY },
                     endpoints: { type: 'geojson', data: EMPTY },
+                    [PLACE_SOURCE]: { type: 'geojson', data: EMPTY },
                 },
                 layers: [
                     ...basemapLayers(colours),
@@ -706,6 +712,7 @@ function MapView() {
                         },
                     },
                     ...labelLayers(colours),
+                    ...placeLayers(),
                 ],
                 glyphs: 'https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf',
             },
@@ -715,6 +722,18 @@ function MapView() {
         })
         mapRef.current = map
 
+        const placesController = new AbortController()
+        map.once('style.load', () => {
+            void Promise.all([loadIndex(), installPlaceIcons(map, placesController.signal)])
+                .then(([index]) => {
+                    if (placesController.signal.aborted) return
+                    ;(map.getSource(PLACE_SOURCE) as maplibregl.GeoJSONSource).setData(mapPlaces(index))
+                })
+                .catch((error: unknown) => {
+                    if (!placesController.signal.aborted) console.warn('Map places could not be loaded.', error)
+                })
+        })
+
         // Bottom right is the only corner no panel is standing in. Both are
         // restyled in index.css -- maplibre ships them square and opaque.
         map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right')
@@ -723,10 +742,39 @@ function MapView() {
         // The updater form is essential: this handler is registered once and
         // would otherwise capture the empty array it saw at mount forever.
         map.on('click', event => {
+            const [place] = map.queryRenderedFeatures(event.point, { layers: PLACE_LAYER_IDS })
+            if (place?.geometry.type === 'Point' && typeof place.properties.name === 'string') {
+                const [lng, lat] = place.geometry.coordinates
+                const point: LatLon = [lat, lng]
+                setPlaceNames(names => ({ ...names, [JSON.stringify(point)]: place.properties.name }))
+                setPoints(previous => nextPoints(previous, point))
+                return
+            }
             const { lat, lng } = event.lngLat
             setPoints(previous => nextPoints(previous, [lat, lng]))
         })
         map.getCanvas().style.cursor = 'crosshair'
+
+        const tooltip = new maplibregl.Popup({
+            closeButton: false, closeOnClick: false, anchor: 'bottom', offset: 20,
+            className: 'place-tooltip',
+        })
+        map.on('mousemove', PLACE_LAYER_IDS, event => {
+            const place = event.features?.[0]
+            if (place?.geometry.type !== 'Point') return
+            map.getCanvas().style.cursor = 'pointer'
+            const label = document.createElement('div')
+            const name = document.createElement('strong')
+            name.textContent = place.properties.name
+            const detail = document.createElement('span')
+            detail.textContent = place.properties.detail
+            label.append(name, detail)
+            tooltip.setLngLat(place.geometry.coordinates as [number, number]).setDOMContent(label).addTo(map)
+        })
+        map.on('mouseleave', PLACE_LAYER_IDS, () => {
+            map.getCanvas().style.cursor = 'crosshair'
+            tooltip.remove()
+        })
 
         // The container gets its height from CSS, which can resolve after the
         // map is constructed -- maplibre then keeps its 400x300 fallback canvas
@@ -739,6 +787,8 @@ function MapView() {
         map.once('load', () => map.resize())
 
         return () => {
+            placesController.abort()
+            tooltip.remove()
             observer.disconnect()
             map.remove()
             mapRef.current = null

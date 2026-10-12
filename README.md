@@ -16,6 +16,7 @@ The shortest walk is not always the most comfortable one. Shadow Path combines a
 - **Route comparison:** walking time, distance, arrival time, and sun or shade exposure alongside the shortest path.
 - **Optional departure planning:** the planner starts with Astana's current time. `Choose time` opens scheduling and a comparison of departures across the day.
 - **Interactive map:** building and tree shadows, place search with Cyrillic and Latin aliases, map selection, and device location.
+- **Place icons:** cafés, shops, malls, hospitals, and other destinations, with custom Baiterek and Khan Shatyr illustrations. Clicking an icon selects a route endpoint; zoom levels and collision detection keep the map readable.
 - **Responsive interface:** a light map workspace on desktop and a compact planning sheet on mobile.
 
 ## Architecture

@@ -30,7 +30,7 @@ const LIMIT = 7
 // nearly eight thousand of them: `c` is the name as written, `l` the same in
 // Latin, and both already hold every spelling OSM knows -- name:en, name:kk,
 // name:ru, alt_name -- so "Supreme Court" finds Жоғарғы сот.
-type Entry = { n: string, d: string, p: [number, number], c: string, l: string }
+export type SearchEntry = { n: string, d: string, p: [number, number], c: string, l: string }
 
 // The folding rules travel inside the index rather than living here. A query
 // has to be folded exactly as the keys were, and a second copy of these tables
@@ -42,7 +42,7 @@ type Fold = {
     collapse: [string, string][]
 }
 
-type Index = { entries: Entry[], fold: Fold, generated_at: string }
+export type SearchIndex = { entries: SearchEntry[], fold: Fold, generated_at: string }
 
 export type Place = {
     id: number
@@ -75,12 +75,12 @@ export const latinise = (text: string, rules: Fold) => {
 const startsWord = (key: string, query: string) =>
     key.startsWith(query) || key.includes(` ${query}`)
 
-export const rank = (index: Index, query: string): Place[] => {
+export const rank = (index: SearchIndex, query: string): Place[] => {
     const c = fold(query, index.fold)
     const l = latinise(query, index.fold)
     if (!c && !l) return []
 
-    const hits: { entry: Entry, at: number, lead: boolean }[] = []
+    const hits: { entry: SearchEntry, at: number, lead: boolean }[] = []
     index.entries.forEach((entry, at) => {
         const byScript = c && entry.c.includes(c)
         const byLatin = l && entry.l.includes(l)
@@ -109,14 +109,14 @@ export const rank = (index: Index, query: string): Place[] => {
 
 // Fetched once and kept. The file is a few hundred kilobytes and never changes
 // between reloads, so the first search pays for it and no other one does.
-let pending: Promise<Index> | null = null
+let pending: Promise<SearchIndex> | null = null
 
 // Deliberately takes no AbortSignal. The load is shared by every search there
 // will ever be, so cancelling it on behalf of one of them is never right --
 // wired to a keystroke it would abort on the next keystroke, every time, and
 // the index would never finish arriving at all. Staleness is handled where it
 // belongs, by the caller ignoring an answer to a query since edited.
-export const loadIndex = (): Promise<Index> => {
+export const loadIndex = (): Promise<SearchIndex> => {
     pending ??= fetch(INDEX_URL).then(response => {
         // A dev server answers an unknown path with index.html and a cheerful
         // 200, so a missing index arrives as HTML rather than as a 404 -- the
@@ -126,7 +126,7 @@ export const loadIndex = (): Promise<Index> => {
             throw new Error(`No search index at ${INDEX_URL} (${response.status})`
                 + ' -- run backend/scripts/export_search_index.py')
         }
-        return response.json() as Promise<Index>
+        return response.json() as Promise<SearchIndex>
     }).catch(error => {
         // Never cache the failure: a reload of the page is not required to fix
         // a file that was simply not built yet.
