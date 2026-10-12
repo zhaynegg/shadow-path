@@ -52,11 +52,29 @@ export type Leg = {
     geometry: LineGeometry
 }
 
+export type Preference = {
+    mode: 'shade' | 'sun' | 'balanced'
+    season: 'winter' | 'spring' | 'summer' | 'autumn'
+    source: 'season' | 'weather' | 'fallback'
+    reason: 'winter' | 'summer' | 'cold' | 'warm' | 'comfortable' | 'overcast'
+        | 'precipitation' | 'seasonal_fallback'
+    weather: null | {
+        temperature_c: number
+        apparent_temperature_c: number
+        cloud_cover_percent: number
+        precipitation_mm: number
+        time: string
+    }
+    weather_provider: string | null
+    weather_url: string | null
+}
+
 // What POST /api/route returns: the route the user asked for, plus the plain
 // shortest path for comparison. The comparison is the product.
 export type RoutePlan = {
     route: Leg
     baseline: Leg
+    preference: Preference
 }
 
 export type RouteRequest = {
@@ -72,7 +90,15 @@ export type RouteRequest = {
     // hour is cut into. The backend rejects anything else, because every
     // distinct stamp is a scored graph of its own.
     minute: number
-    alpha: number
+}
+
+export async function fetchPreference(date: string, time: string, signal?: AbortSignal): Promise<Preference> {
+    const query = new URLSearchParams({
+        date, hour: String(Number(time.slice(0, 2))), minute: String(Number(time.slice(3))),
+    })
+    const response = await fetch(`/api/preference?${query}`, { signal })
+    if (!response.ok) throw new Error('Weather and seasonal preference are unavailable.')
+    return response.json() as Promise<Preference>
 }
 
 // One POST, one JSON answer, one way of reading a failure. Both endpoints take
@@ -94,7 +120,11 @@ async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promi
         let message = text.slice(0, 200)
         try {
             const detail = JSON.parse(text).detail
-            if (typeof detail === 'string') message = detail
+            if (typeof detail === 'string') {
+                message = response.status === 503 && detail.includes('export_shadow_tiles.py')
+                    ? 'Routes are unavailable for this map date. Please try again after the map data updates.'
+                    : detail
+            }
         } catch {
             // Not JSON. Keep the raw text.
         }
@@ -128,6 +158,7 @@ export type Departure = {
     // peaks at dusk on every walk in the city, which is a fact about the sun
     // rather than about the route.
     baseline_shade_fraction: number
+    preference: Preference
 }
 
 // What POST /api/day returns: one row per daylight stamp, ascending.
@@ -138,6 +169,7 @@ export type DayPlan = {
     baseline_distance_m: number
     baseline_duration_s: number
     departures: Departure[]
+    preference: Preference
 }
 
 // RouteRequest without the stamp. The scan is the one call that names no time,
@@ -146,7 +178,6 @@ export type DayRequest = {
     origin: LatLon
     destination: LatLon
     date: string
-    alpha: number
 }
 
 export async function fetchDayScan(request: DayRequest, signal?: AbortSignal): Promise<DayPlan> {

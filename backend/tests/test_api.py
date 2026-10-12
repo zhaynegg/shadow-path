@@ -9,21 +9,21 @@ graph is memoised under.
 import datetime as dt
 from pathlib import Path
 
+# `import ... as`, not `from backend import main`: backend/__init__.py defines a
+# main() of its own for the console script, and that name shadows this module.
+import backend.main as main  # noqa: PLR0402 -- the rewrite ruff suggests is the bug
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
+from backend.config import CRS, LAT, LON, TZ, today
+from backend.core import preference
+from backend.core.day import across_the_day, at_one_stamp
+from backend.core.solar import daylight_times
+from backend.main import RouteRequest, WalkRequest, app
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from shapely.geometry import LineString
-
-# `import ... as`, not `from backend import main`: backend/__init__.py defines a
-# main() of its own for the console script, and that name shadows this module.
-import backend.main as main  # noqa: PLR0402 -- the rewrite ruff suggests is the bug
-from backend.config import CRS, LAT, LON, TZ, today
-from backend.core.day import at_one_stamp
-from backend.core.solar import daylight_times
-from backend.main import RouteRequest, WalkRequest, app
 
 
 def valid_request(**overrides) -> dict:
@@ -39,7 +39,6 @@ def valid_request(**overrides) -> dict:
         "date": today(),
         "hour": 13,
         "minute": 0,
-        "alpha": 3.0,
     } | overrides
 
 
@@ -61,14 +60,12 @@ def clear_caches():
             clear()
 
 
-def test_valid_request_parses_and_alpha_defaults_to_shade_seeking():
+def test_valid_request_parses_without_a_caller_preference():
     """The control. A file of rejections proves nothing if everything is rejected."""
     fields = valid_request()
-    del fields["alpha"]
-
     request = RouteRequest(**fields)
 
-    assert request.alpha == 3.0
+    assert not hasattr(request, "alpha")
     assert request.date == today()
     # Parsed into a real date, not left as whatever came off the wire -- the
     # scored_edges cache key is only stable because this is a date object.
@@ -96,31 +93,11 @@ def test_date_just_inside_the_bound_is_accepted():
     assert RouteRequest(**valid_request(date=edge)).date == edge
 
 
-@pytest.mark.parametrize("alpha", [float("inf"), float("-inf"), float("nan")])
-def test_alpha_must_be_a_real_number(alpha):
-    """Not a typo anyone makes -- it is what the ge/le bounds are really for.
-
-    A float field with no bounds takes inf and nan happily. Either one sails
-    through A* without raising: inf makes every weight equal, nan makes every
-    comparison false, and both come back as a route nobody asked for and no
-    error to say so. Bounding alpha on both sides is what rejects them, which
-    is why the bounds are not just a range check.
-    """
+@pytest.mark.parametrize("alpha", [0, 3, -6, 13, float("inf"), float("-inf"), float("nan")])
+def test_caller_cannot_set_the_routing_preference(alpha):
+    """Hiding the slider is insufficient: the HTTP contract must refuse overrides."""
     with pytest.raises(ValidationError):
         RouteRequest(**valid_request(alpha=alpha))
-
-
-@pytest.mark.parametrize("alpha", [main.MAX_ALPHA + 0.1, -main.MAX_ALPHA - 0.1])
-def test_alpha_past_the_limit_is_rejected(alpha):
-    with pytest.raises(ValidationError):
-        RouteRequest(**valid_request(alpha=alpha))
-
-
-def test_negative_alpha_is_accepted():
-    """Sun-seeking is not a novelty mode -- at 51degN it is the winter product.
-    A bound written as ge=0 would pass every other test in this file.
-    """
-    assert RouteRequest(**valid_request(alpha=-6.0)).alpha == -6.0
 
 
 @pytest.mark.parametrize("hour", [-1, 24])
@@ -189,23 +166,22 @@ def day_body(**overrides) -> dict:
         "origin": [51.1605, 71.4704],
         "destination": [51.1700, 71.4300],
         "date": today().isoformat(),
-        "alpha": 3.0,
     } | overrides
 
 
 def test_day_request_inherits_the_bounds_a_route_request_has():
-    """Both endpoints take the same two ends, date and preference, so they take
+    """Both endpoints take the same two ends and date, so they take
     them from the same model. Written down because the alternative -- a second
     model with the fields copied over -- is how one of them ends up a year
     later with a validator the other one grew and it did not.
     """
-    assert WalkRequest(**day_body()).alpha == 3.0
+    assert not hasattr(WalkRequest(**day_body()), "alpha")
 
     for far in (today() + dt.timedelta(days=400), today() - dt.timedelta(days=400)):
         with pytest.raises(ValidationError):
             WalkRequest(**day_body(date=far))
 
-    for rejected in (float("nan"), float("inf"), main.MAX_ALPHA + 0.1):
+    for rejected in (0, -6, 6, float("nan"), float("inf")):
         with pytest.raises(ValidationError):
             WalkRequest(**day_body(alpha=rejected))
 
@@ -313,24 +289,63 @@ def test_day_endpoint_declines_before_it_reaches_the_graph(monkeypatch):
     clear_caches()
 
 
-def test_day_endpoint_passes_the_signed_alpha_through(monkeypatch):
-    """Signed all the way down. A scan that dropped the sign would plot the
-    shadiest hour to somebody who asked for the sunniest.
-    """
+def test_day_endpoint_uses_a_server_preference_per_departure(monkeypatch):
+    """A weather-changing day must not reuse noon's choice for every departure."""
     seen = {}
 
     def fake_departures(streets, day, origin, destination, alpha):
-        seen["alpha"] = alpha
-        return {"baseline_distance_m": 100.0, "baseline_duration_s": 74.0, "departures": []}
+        seen["alpha"] = [alpha(at) for at in day.times]
+        return {"baseline_distance_m": 100.0, "baseline_duration_s": 74.0,
+                "departures": [{"time": "12:00"}, {"time": "13:00"}]}
 
-    monkeypatch.setattr(main, "scored_day", lambda date: a_day())
+    choices = {dt.time(12): preference.Preference(-4, "autumn", "weather", "cold"),
+               dt.time(13): preference.Preference(4, "autumn", "weather", "warm")}
+
+    day = across_the_day([np.array([0.5]), np.array([0.5])], [dt.time(12), dt.time(13)])
+    monkeypatch.setattr(main, "scored_day", lambda date: day)
     monkeypatch.setattr(main, "streets", lambda: None)
     monkeypatch.setattr(main, "departures", fake_departures)
+    monkeypatch.setattr(preference, "for_day", lambda date, times: choices)
 
-    response = TestClient(app).post("/api/day", json=day_body(alpha=-4.0))
+    response = TestClient(app).post("/api/day", json=day_body())
 
     assert response.status_code == 200
-    assert seen["alpha"] == -4.0
+    assert seen["alpha"] == [-4.0, 4.0]
+    assert response.json()["preference"]["mode"] == "sun"
+    assert response.json()["departures"][0]["preference"] == choices[dt.time(12)].public()
+    assert response.json()["departures"][1]["preference"] == choices[dt.time(13)].public()
+
+
+def test_route_uses_the_server_choice_and_reports_it(monkeypatch):
+    chosen = preference.Preference(6, "summer", "season", "summer")
+    seen = {}
+
+    def fake_plan(streets, day, origin, destination, alpha, depart):
+        seen["alpha"] = alpha
+        leg = {"distance_m": 100, "duration_s": 74, "shade_fraction": 0.5,
+               "geometry": LineString([(0, 0), (100, 0)])}
+        return {"route": leg.copy(), "baseline": leg.copy()}
+
+    monkeypatch.setattr(main, "sun_over", lambda date, at: a_day())
+    monkeypatch.setattr(main, "streets", lambda: None)
+    monkeypatch.setattr(main, "plan", fake_plan)
+    monkeypatch.setattr(preference, "at_time", lambda date, at: chosen)
+
+    response = TestClient(app).post("/api/route", json=route_body())
+
+    assert response.status_code == 200
+    assert seen["alpha"] == 6
+    assert response.json()["preference"] == chosen.public()
+    assert response.json()["route"]["geometry"]["type"] == "LineString"
+
+
+@pytest.mark.parametrize("endpoint, body", [("/api/route", route_body), ("/api/day", day_body)])
+def test_api_rejects_a_legacy_coefficient_before_loading_the_graph(monkeypatch, endpoint, body):
+    def no_graph(*args, **kwargs):
+        raise AssertionError("a caller override must be refused before loading data")
+
+    monkeypatch.setattr(main, "scored_day", no_graph)
+    assert TestClient(app).post(endpoint, json=body(alpha=3)).status_code == 422
 
 
 def test_route_falls_back_to_one_stamp_without_a_cached_day(monkeypatch):

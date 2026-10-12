@@ -16,6 +16,7 @@ walker with a preference, and how fast they get through it.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import geopandas as gpd
@@ -31,11 +32,6 @@ from backend.core.day import MINUTES_IN_DAY, Day
 # A click a little off a pavement is normal; a click across town is not. Beyond
 # this, the nearest node is not a reasonable stand-in for what the user meant.
 MAX_SNAP_M = 300.0
-
-# The strongest preference the slider offers, in either direction. Nothing in
-# the maths needs an upper bound -- the API takes one so that a signed alpha
-# still has something to reject, nan and inf included.
-MAX_ALPHA = 12.0
 
 # Metres a second on the flat, which Astana is -- it is built on steppe, so
 # nothing here needs a slope model. 1.35 m/s is 4.9 km/h, the ordinary adult
@@ -252,7 +248,8 @@ def plan(streets: Streets, day: Day, origin, destination,
     }
 
 
-def departures(streets: Streets, day: Day, origin, destination, alpha: float) -> dict:
+def departures(streets: Streets, day: Day, origin, destination,
+               alpha: float | Callable[[dt.time], float]) -> dict:
     """The same walk, planned at every stamp of one day.
 
     "When should I leave?" is the question a shadow map is uniquely able to
@@ -270,13 +267,21 @@ def departures(streets: Streets, day: Day, origin, destination, alpha: float) ->
     and none of the point.
     """
     start, goal = endpoints(streets, origin, destination)
-    weights = edge_weights(day.shade, streets.network.length, alpha)
 
     # Searched once, re-dated per departure -- see `shortest`.
     direct = shortest(streets, start, goal)
 
     rows = []
+    weights = None
+    previous_alpha = None
     for at in day.times:
+        # The server's weather policy can choose sun for a cold morning and
+        # shade for a warm afternoon. Hold only the current weights: caching
+        # a whole citywide table per hour would dominate request memory.
+        current_alpha = alpha(at) if callable(alpha) else alpha
+        if current_alpha != previous_alpha or weights is None:
+            weights = edge_weights(day.shade, streets.network.length, current_alpha)
+            previous_alpha = current_alpha
         depart = at.hour * 60 + at.minute
         wanted = search.walk(streets.network, weights, day.stamp_of_minute,
                              start, goal, depart, MINUTES_PER_M)

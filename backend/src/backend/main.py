@@ -5,19 +5,19 @@ from __future__ import annotations
 import datetime as dt
 import json
 from functools import lru_cache
+from typing import Annotated
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.config import CACHE_DIR, CRS, GRAPH_RADIUS, LAT, LON, TZ, today
-from backend.core import scores
+from backend.core import preference, scores
 from backend.core import streets as street_tables
 from backend.core.day import Day, at_one_stamp, day_of, empty_shade
 from backend.core.routing import (
-    MAX_ALPHA,
     departures,
     lay_out,
     minutes_past_midnight,
@@ -39,27 +39,16 @@ app = FastAPI()
 MAX_DATE_DRIFT = dt.timedelta(days=366)
 
 
-class WalkRequest(BaseModel):
-    """Two ends, a day, and how much detour the walker will pay for.
-
-    Everything both endpoints need. /api/route adds the stamp the walker sets
-    off in; /api/day asks about all of them and so names none.
-    """
-
-    origin: tuple[float, float]
-    destination: tuple[float, float]
+class DateRequest(BaseModel):
+    # Legacy alpha and all other unknown fields are refused. The policy is
+    # server-owned, including for callers that bypass the browser controls.
+    model_config = ConfigDict(extra="forbid")
 
     # The date the map is showing, taken from the tile manifest. Sent rather
     # than assumed here: if a scheduled rebuild fails, the tiles on screen are
     # yesterday's, and a server trusting its own clock would weight the streets
     # by a sun nobody can see.
     date: dt.date
-
-    # Signed: positive routes towards shade, negative towards sun, 0 is the
-    # plain shortest path. Bounded on both sides rather than left open, because
-    # the bounds are also what rejects nan and inf -- either would sail through
-    # the search and come back as a route nobody asked for.
-    alpha: float = Field(3.0, ge=-MAX_ALPHA, le=MAX_ALPHA)
 
     @field_validator("date")
     @classmethod
@@ -69,7 +58,14 @@ class WalkRequest(BaseModel):
         return value
 
 
-class RouteRequest(WalkRequest):
+class WalkRequest(DateRequest):
+    """The two ends and shadow date; routing preference is automatic."""
+
+    origin: tuple[float, float]
+    destination: tuple[float, float]
+
+
+class PreferenceRequest(DateRequest):
     hour: int = Field(12, ge=0, le=23)
 
     # Minutes past the hour, and only the ones a tileset can exist for. Low-sun
@@ -85,6 +81,10 @@ class RouteRequest(WalkRequest):
         if value not in LOW_SUN_MINUTES:
             raise ValueError(f"minute must be one of {list(LOW_SUN_MINUTES)}")
         return value
+
+
+class RouteRequest(WalkRequest, PreferenceRequest):
+    """A walk and the stamp it departs in."""
 
 def line_to_geojson(line, crs) -> dict:
     frame = gpd.GeoDataFrame(geometry=[line], crs=crs).to_crs(4326)
@@ -245,6 +245,12 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/preference")
+def preference_endpoint(request: Annotated[PreferenceRequest, Query()]) -> dict:
+    """A read-only explanation of the policy, available before choosing points."""
+    return preference.at_time(request.date, dt.time(request.hour, request.minute)).public()
+
+
 @app.post("/api/route")
 def route_endpoint(request: RouteRequest) -> dict:
     at = dt.time(request.hour, request.minute)
@@ -252,15 +258,17 @@ def route_endpoint(request: RouteRequest) -> dict:
     if day is None:
         raise no_scores(request.date)
 
+    chosen = preference.at_time(request.date, at)
     try:
         result = plan(streets(), day,
-            request.origin, request.destination, request.alpha, minutes_past_midnight(at))
+            request.origin, request.destination, chosen.alpha, minutes_past_midnight(at))
     except ValueError as exc:
         # A bad pair of points is the caller's mistake, not a server fault.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     for leg in result.values():
         leg["geometry"] = line_to_geojson(leg["geometry"], CRS)
+    result["preference"] = chosen.public()
     return result
 
 
@@ -276,7 +284,15 @@ def day_endpoint(request: WalkRequest) -> dict:
     if day is None:
         raise no_scores(request.date)
 
+    # Noon is a summary for the panel; each departure carries its own policy.
+    noon = dt.time(12)
+    choices = preference.for_day(request.date, tuple(dict.fromkeys((*day.times, noon))))
     try:
-        return departures(streets(), day, request.origin, request.destination, request.alpha)
+        result = departures(streets(), day, request.origin, request.destination,
+                            lambda at: choices[at].alpha)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    for row in result["departures"]:
+        row["preference"] = choices[dt.time.fromisoformat(row["time"])].public()
+    result["preference"] = choices[noon].public()
+    return result

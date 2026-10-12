@@ -1,151 +1,132 @@
 import type { ReactNode } from 'react'
-import type { RoutePlan } from '../api/client'
+import type { Preference, RoutePlan } from '../api/client'
 import { metres, minutes, percent } from '../lib/format'
 import { clockAfter, endsIn } from '../lib/stamps'
 
 type RouteSummaryProp = {
     plan: RoutePlan | null,
+    preference?: Preference | null,
     loading: boolean,
     error: string | null,
     pointCount: number,
-    // Signed, so this panel is the one place that knows whether the walk being
-    // sold is the shady one or the sunny one. Everything below reads off it.
-    alpha: number,
-    // The stamp the walk was planned for, which is also when the walker is
-    // assumed to set off -- so it is what the arrival clock counts from.
     time: string,
-    // The daylight stamps, so the panel can say when the walk runs on past the
-    // one the map is drawing.
     stamps: string[],
-    // The departure chart, which only makes sense once there is a walk to
-    // chart. Passed in rather than built here so this card stays what it
-    // has always been -- two routes and the difference between them -- and
-    // knows nothing about a second endpoint.
     children?: ReactNode,
 }
 
 type RowProp = {
     label: string,
     leg: RoutePlan['route'],
-    seekingSun: boolean,
-    // The route is a solid blue line on the map and the baseline is a grey
-    // dashed one. The same two marks appear here, so a row and the line it
-    // describes are matched by shape rather than by having to be told.
+    mode: Preference['mode'],
     mark: 'line' | 'dash',
 }
 
-function Row({ label, leg, seekingSun, mark }: RowProp) {
-    // The backend only ever measures shade. Sun is the other side of the same
-    // number, not a second measurement.
-    const share = seekingSun ? 1 - leg.shade_fraction : leg.shade_fraction
+function Row({ label, leg, mode, mark }: RowProp) {
+    const share = mode === 'sun' ? 1 - leg.shade_fraction : leg.shade_fraction
 
     return (
         <div className="stat">
             <span className="stat-name">
-                <span className={mark} />
+                <span className={mark} aria-hidden="true" />
                 {label}
             </span>
             <span className="stat-dist">
-                {/* Minutes first. "1.65 km" is a number a reader has to
-                    convert before it means anything; the conversion is the
-                    same one every time, so the panel does it for them. */}
                 {minutes(leg.duration_s)}
                 <span className="stat-far">{metres(leg.distance_m)}</span>
             </span>
-            <span className="stat-bar">
-                {/* Both bars are filled in the colour of the thing being
-                    measured and drawn to the same scale, so the gap between
-                    them is the answer, at a glance. */}
-                <span className="bar">
-                    <span className="bar-fill" style={{
-                        width: `${Math.max(share * 100, 0)}%`,
-                        background: seekingSun ? 'var(--sun)' : 'var(--shade)',
-                    }} />
+            {mode !== 'balanced' && (
+                <span className="stat-bar">
+                    <span className="bar" aria-hidden="true">
+                        <span className="bar-fill" style={{
+                            width: `${Math.min(Math.max(share * 100, 0), 100)}%`,
+                            background: mode === 'sun' ? 'var(--sun)' : 'var(--shade)',
+                        }} />
+                    </span>
+                    <span className="stat-share">{percent(share)} {mode}</span>
                 </span>
-                <span className="stat-share">
-                    {percent(share)} {seekingSun ? 'sun' : 'shade'}
-                </span>
-            </span>
+            )}
         </div>
     )
 }
 
-function RouteSummary({ plan, loading, error, pointCount, alpha, time, stamps,
+function RouteSummary({ plan, preference, loading, error, pointCount, time, stamps,
     children }: RouteSummaryProp) {
-    const seekingSun = alpha < 0
-    const wanted = seekingSun ? 'sun' : 'shade'
-    const found = seekingSun ? 'sunlit' : 'shaded'
-    const more = seekingSun ? 'sunnier' : 'shadier'
+    const policy = plan?.preference ?? preference
+    const mode = policy?.mode ?? 'balanced'
+    const modeLabel = mode === 'sun' ? 'More sun' : mode === 'shade' ? 'More shade' : 'Shortest route'
     let body
 
     if (error) {
-        body = <div className="summary-error">{error}</div>
+        body = <div className="summary-error" role="alert">{error}</div>
     } else if (pointCount === 0) {
         body = (
             <div className="summary-hint">
-                {/* Both ways in, named in the order they are reached for:
-                    somebody who can see their street clicks it, and somebody
-                    who cannot needs to be told the search box is there at all. */}
-                <span className="pin pin-a">A</span>
-                Click the map, or search, to set a starting point.
+                <span className="pin pin-a" aria-hidden="true">A</span>
+                Click the map or search for your starting point.
             </div>
         )
     } else if (pointCount === 1) {
         body = (
             <div className="summary-hint">
-                <span className="pin pin-b">B</span>
-                Now pick a destination.
+                <span className="pin pin-b" aria-hidden="true">B</span>
+                Pick a destination.
             </div>
         )
     } else if (loading || !plan) {
         body = (
-            <div className="summary-hint">
-                <span className="spinner" />
-                Finding a route…
+            <div className="summary-hint" role="status">
+                <span className="spinner" aria-hidden="true" />
+                Finding your route…
             </div>
         )
     } else {
-        // Deliberately not "2.3x more shade": at midday the direct route is
-        // often 0% shaded, and nothing is a useful multiple of zero.
-        const longer = plan.route.distance_m / plan.baseline.distance_m - 1
-        // Shade gained, or shade given up -- which is sun gained. One
-        // subtraction, read in whichever direction the walker asked for.
         const difference = plan.route.shade_fraction - plan.baseline.shade_fraction
-        const gained = seekingSun ? -difference : difference
+        const gained = mode === 'sun' ? -difference : difference
+        const extraSeconds = Math.max(plan.route.duration_s - plan.baseline.duration_s, 0)
+        const extraMinutes = Math.round(extraSeconds / 60)
         const lands = endsIn(time, plan.route.duration_s, stamps)
 
         body = (
             <>
-                <Row label={`${found} route`} leg={plan.route}
-                    seekingSun={seekingSun} mark="line" />
-                <Row label="direct route" leg={plan.baseline}
-                    seekingSun={seekingSun} mark="dash" />
-                <div className="verdict">
-                    {gained < 0.005
-                        ? `No ${more} route exists here — both are the same walk.`
-                        : (
-                            <>
-                                <strong>{percent(longer)}</strong> longer, for{' '}
-                                <strong>{percent(gained)}</strong> more of the walk in {wanted}.
-                            </>
-                        )}
+                <div className="summary-primary">
+                    <strong className="summary-duration">{minutes(plan.route.duration_s)}</strong>
+                    <span className={`summary-mode mode-${mode}`}>
+                        {modeLabel}
+                    </span>
                 </div>
-                {/* The whole point of the minutes above, said as a clock:
-                    the map is already showing one moment of one day, and this
-                    is the other end of the walk that starts in it. */}
-                <div className="arrival">
-                    Set off at <strong>{time}</strong> and you are there by{' '}
-                    <strong>{clockAfter(time, plan.route.duration_s)}</strong>.
+                <div className="summary-meta">
+                    {metres(plan.route.distance_m)} · Arrive at{' '}
+                    <strong>{clockAfter(time, plan.route.duration_s)}</strong>
                 </div>
-                {/* The route is planned against the sun as it moves, so a long
-                    walk is weighted by shadows the map is not drawing. Saying
-                    so is cheaper than letting the line look wrong. */}
-                {lands && (
+
+                <Row label={mode === 'balanced' ? 'Shortest route' : 'Your route'}
+                    leg={plan.route} mode={mode} mark="line" />
+                {mode !== 'balanced' && (
+                    <>
+                        <Row label="Direct route" leg={plan.baseline} mode={mode} mark="dash" />
+                        <div className="verdict">
+                            {gained < 0.005
+                                ? 'No extra exposure benefit at this departure.'
+                                : (
+                                    <>
+                                        <strong>{Math.round(gained * 100)} percentage points</strong>{' '}
+                                        more {mode}{extraSeconds > 1
+                                            ? extraMinutes > 0
+                                                ? <> · <strong>+{extraMinutes} min</strong> walking</>
+                                                : ' · under 1 min extra walking'
+                                            : ' · no extra walking time'}.
+                                    </>
+                                )}
+                        </div>
+                    </>
+                )}
+                {mode === 'balanced' && <div className="verdict">Taking the shortest walk.</div>}
+                {lands && mode !== 'balanced' && (
                     <div className="arrival drift">
                         {lands === 'dark'
-                            ? 'The far end of it is after dark, when nothing casts a shadow at all.'
-                            : <>The far end of it is walked in <strong>{lands}</strong>&rsquo;s
-                                shadows, not the {time} on the map.</>}
+                            ? 'You arrive after daylight ends.'
+                            : <>Shadows change during this walk; arrival is closest to{' '}
+                                <strong>{lands}</strong>.</>}
                     </div>
                 )}
                 {children}
@@ -154,7 +135,7 @@ function RouteSummary({ plan, loading, error, pointCount, alpha, time, stamps,
     }
 
     return (
-        <div className="panel summary">
+        <div className="summary">
             <div className="summary-head">
                 <span className="summary-title">Your walk</span>
             </div>

@@ -1,20 +1,32 @@
 import { describe, expect, it } from 'vitest'
-import type { DayPlan, Departure } from '../api/client'
-import { CHART, area, bands, gain, heightOf, polyline, share, spread, verdict } from './departures'
+import type { DayPlan, Departure, Preference } from '../api/client'
+import { CHART, area, bands, gain, heightOf, polyline, preferredShare, share, spread, verdict } from './departures'
 import { minutes } from './format'
 import { clockAfter, endsIn } from './stamps'
 
-// [time, route shade, direct shade] -- the three numbers a stamp comes back as,
-// with the distance left out because nothing here reads it.
-const day = (rows: [string, number, number][]): DayPlan => ({
+const preference = (mode: Preference['mode'] = 'shade'): Preference => ({
+    mode,
+    season: 'autumn',
+    source: 'weather',
+    reason: 'comfortable',
+    weather: null,
+    weather_provider: null,
+    weather_url: null,
+})
+
+type TestRow = [string, number, number, Preference['mode']?, number?]
+const BASELINE_DURATION = 3831 / 1.35
+const day = (rows: TestRow[]): DayPlan => ({
     baseline_distance_m: 3831,
-    baseline_duration_s: 3831 / 1.35,
-    departures: rows.map(([time, shade, baseline]): Departure => ({
+    baseline_duration_s: BASELINE_DURATION,
+    preference: preference(),
+    departures: rows.map(([time, shade, baseline, mode = 'shade', duration]): Departure => ({
         time,
         distance_m: 4200,
-        duration_s: 4200 / 1.35,
+        duration_s: duration ?? 4200 / 1.35,
         shade_fraction: shade,
         baseline_shade_fraction: baseline,
+        preference: preference(mode),
     })),
 })
 
@@ -38,58 +50,101 @@ describe('share', () => {
 })
 
 describe('verdict', () => {
-    it('recommends the hour with the most of what was asked for', () => {
-        const answer = verdict(SEPTEMBER, false)
+    it('recommends a useful detour rather than the city-wide shade peak at dusk', () => {
+        const answer = verdict(SEPTEMBER)
 
-        expect(answer?.best.time).toBe('18:20')
-        expect(answer?.bestShare).toBeCloseTo(0.99)
+        expect(answer?.best.time).toBe('15:00')
+        expect(answer?.bestShare).toBeCloseTo(0.71)
+        expect(answer?.bestGain).toBeCloseTo(0.25)
+        expect(answer?.hasUsefulDetour).toBe(true)
     })
 
-    it('names the hour the detour pays for separately from the shadiest one', () => {
-        // The reason both numbers exist. A shade curve peaks at dusk on every
-        // walk in the city, because by then the whole city is shaded -- at
-        // 18:20 the direct route is already 98% shaded and the clever route is
-        // worth one point. The afternoon is where the routing earns anything.
-        const answer = verdict(SEPTEMBER, false)
-
-        expect(answer?.payoff.time).toBe('15:00')
-        expect(answer?.payoffGain).toBeCloseTo(0.25)
-        expect(answer?.payoff.time).not.toBe(answer?.best.time)
-    })
-
-    it('turns around for a sun-seeker', () => {
-        // Astana is one of the coldest capitals on earth and for half the year
-        // the walk you want is the sunny one. A chart that always recommended
-        // the shadiest hour would send that reader out at dusk.
-        const answer = verdict(SEPTEMBER, true)
+    it('takes the extra walking into account instead of maximizing gain alone', () => {
+        const answer = verdict(day([
+            ['08:00', 0.8, 0.3, 'shade', BASELINE_DURATION + 1200],
+            ['12:00', 0.65, 0.45, 'shade', BASELINE_DURATION + 60],
+        ]))
 
         expect(answer?.best.time).toBe('12:00')
-        expect(answer?.bestShare).toBeCloseTo(0.43)
-        // Sun gained is shade given up: the direct route at noon is 59% sunlit
-        // against the sun-seeking route's 43%, so detouring here costs.
-        expect(answer?.payoffGain).toBeLessThanOrEqual(0)
+        expect(answer?.extraDuration_s).toBeCloseTo(60)
+        expect(answer?.payoff.time).toBe('08:00')
+        expect(answer?.payoffGain).toBeCloseTo(0.5)
+    })
+
+    it('uses each departure’s sun preference', () => {
+        const answer = verdict(day([
+            ['08:00', 0.7, 0.72, 'sun'],
+            ['12:00', 0.2, 0.5, 'sun'],
+            ['16:00', 0.4, 0.55, 'sun'],
+        ]))
+
+        expect(answer?.best.time).toBe('12:00')
+        expect(answer?.bestShare).toBeCloseTo(0.8)
+        expect(answer?.bestGain).toBeCloseTo(0.3)
+    })
+
+    it('compares improvements when weather changes the preferred exposure', () => {
+        const answer = verdict(day([
+            ['08:00', 0.2, 0.7, 'sun'],
+            ['12:00', 0.95, 0.9, 'shade'],
+            ['16:00', 0.99, 0.1, 'balanced', BASELINE_DURATION],
+        ]))
+
+        // Noon has the largest preferred share, but almost all of it is
+        // already on the direct walk. The morning route adds much more sun.
+        expect(answer?.best.time).toBe('08:00')
+        expect(answer?.best.preference.mode).toBe('sun')
+        expect(answer?.bestGain).toBeCloseTo(0.5)
+        expect(answer?.payoff.time).toBe('08:00')
+    })
+
+    it('recommends the shortest walk when weather has no exposure preference', () => {
+        const answer = verdict(day([
+            ['08:00', 0.99, 0.1, 'balanced', BASELINE_DURATION + 120],
+            ['12:00', 0.2, 0.3, 'balanced', BASELINE_DURATION],
+            ['16:00', 0.9, 0.4, 'balanced', BASELINE_DURATION],
+        ]))
+
+        expect(answer?.best.time).toBe('12:00')
+        expect(answer?.bestShare).toBeNull()
+        expect(answer?.hasUsefulDetour).toBe(false)
+        expect(answer?.payoffGain).toBe(0)
+    })
+
+    it('does not recommend an extra walk for an imperceptible exposure gain', () => {
+        const answer = verdict(day([
+            ['08:00', 0.904, 0.9, 'shade', BASELINE_DURATION + 180],
+            ['12:00', 0.5, 0.5, 'shade', BASELINE_DURATION],
+        ]))
+
+        expect(answer?.best.time).toBe('12:00')
+        expect(answer?.hasUsefulDetour).toBe(false)
     })
 
     it('keeps the earlier hour when two are equally good', () => {
-        // Ordinary near dusk, where several stamps round to fully shaded. An
-        // answer that drifted to the last of them would be telling somebody to
-        // wait forty minutes for nothing.
-        const answer = verdict(day([['17:40', 1.0, 0.5], ['18:00', 1.0, 0.5]]), false)
+        const answer = verdict(day([['17:40', 1.0, 0.5], ['18:00', 1.0, 0.5]]))
 
         expect(answer?.best.time).toBe('17:40')
     })
 
     it('has nothing to say about a day with no daylight in it', () => {
-        expect(verdict(day([]), false)).toBeNull()
+        expect(verdict(day([]))).toBeNull()
     })
 })
 
 describe('gain', () => {
-    it('is the same subtraction read in whichever direction was asked for', () => {
+    it('measures gain in the direction selected by the server', () => {
         const row = SEPTEMBER.departures[3]   // 15:00, 0.71 against 0.46
 
-        expect(gain(row, false)).toBeCloseTo(0.25)
-        expect(gain(row, true)).toBeCloseTo(-0.25)
+        expect(gain(row)).toBeCloseTo(0.25)
+        expect(gain({ ...row, preference: preference('sun') })).toBeCloseTo(-0.25)
+    })
+
+    it('does not invent an exposure gain for a neutral route', () => {
+        const row = day([['12:00', 0.9, 0.1, 'balanced']]).departures[0]
+
+        expect(gain(row)).toBe(0)
+        expect(preferredShare(row)).toBeNull()
     })
 })
 

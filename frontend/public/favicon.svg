@@ -1,14 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34">
-  <defs>
-    <linearGradient id="sp-mark" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#e8963c"/>
-      <stop offset="0.42" stop-color="#b4763f"/>
-      <stop offset="1" stop-color="#3b3b6d"/>
-    </linearGradient>
-  </defs>
-  <rect width="34" height="34" rx="10" fill="url(#sp-mark)"/>
-  <g transform="translate(8.5 8.5) scale(0.7083)" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round">
-    <circle cx="12" cy="12" r="4.2" fill="#ffffff" stroke="none"/>
-    <path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6"/>
+  <rect width="34" height="34" rx="5" fill="#ffda33"/>
+  <g transform="translate(5 5)" fill="none" stroke="#202124" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 19V5h6a4 4 0 0 1 0 8H5m6 0 8 6M17 4l2-2m1 6h2"/>
   </g>
 </svg>

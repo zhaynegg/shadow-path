@@ -3,25 +3,23 @@ import * as maplibregl from 'maplibre-gl'
 import mapWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { useRef, useEffect, useState } from 'react'
 import { Protocol } from 'pmtiles'
-import { layers, BLACK, GRAYSCALE, type Flavor } from '@protomaps/basemaps'
+import { layers, GRAYSCALE, type Flavor } from '@protomaps/basemaps'
 import TimeSlider from './controls/TimeSlider'
-import ShadeSlider from './controls/ShadeSlider'
+import PreferenceCard from './PreferenceCard'
 import SearchBox from './controls/SearchBox'
 import LocateButton from './controls/LocateButton'
-import ThemeButton from './controls/ThemeButton'
 import RouteSummary from './RouteSummary'
 import DeparturePlanner from './DeparturePlanner'
 import type { Place } from '../api/geocode'
 import {
-    fetchDayScan, fetchRoute, fetchShadowManifest,
-    type DayPlan, type LatLon, type LineGeometry, type RoutePlan, type ShadowManifest,
+    fetchDayScan, fetchPreference, fetchRoute, fetchShadowManifest,
+    type DayPlan, type LatLon, type LineGeometry, type Preference, type RoutePlan, type ShadowManifest,
 } from '../api/client'
 import {
     WHOLE_HOURS, cityMinutes, isDaylight, nearestStamp, prettyDate, sliderTimes,
 } from '../lib/stamps'
 import { footprintAt } from '../lib/footprint'
 import { COARSE_M, outOfReach, roughly, type Fix } from '../lib/locate'
-import { currentTheme, useTheme, type Theme } from '../lib/theme'
 
 // What the backend last said, and which request it was saying it about. Either
 // a plan or a message, never both -- a failed request has no route to draw.
@@ -41,7 +39,6 @@ const protocol = new Protocol({ metadata: true })
 
 // Vite proxies /api to the backend in dev (see vite.config.ts), so this stays
 // same-origin.
-const INITIAL_ALPHA = 6
 const INITIAL_ZOOM = 14
 
 // Dragging a slider crosses many values on the way to the one you want. Each
@@ -49,12 +46,8 @@ const INITIAL_ZOOM = 14
 // the drag to settle.
 const DEBOUNCE_MS = 150
 
-// Every colour the map paints that changes with the theme. index.css holds the
-// same values for the panels -- --route, --baseline, --shade, --canopy -- and
-// the two have to agree: a panel that quotes the map in a different blue has
-// taught the reader a second colour language.
+// Map colours match the route and shade accents in index.css.
 type Palette = {
-    // The Protomaps flavour under everything: grey by day, near-black at night.
     basemap: Flavor,
     route: string,
     baseline: string,
@@ -66,51 +59,25 @@ type Palette = {
     waterLine: string,
 }
 
-const PALETTES: Record<Theme, Palette> = {
-    light: {
-        basemap: GRAYSCALE,
-        route: '#2563eb',
-        baseline: '#9ca3af',
-        // Hue carries what kind of shade it is, opacity carries how much of it
-        // there is. Keeping those on separate channels is what lets a tree read
-        // as a tree without overstating how dark it is.
-        shadow: '#3b3b6d',
-        canopy: '#2f6e46',
-        // Warm, and lighter than the #cccccc ground, because everything shaded
-        // on this map is cool and darker. Warm against cool separates a
-        // building from a shadow before any difference in value has to, which
-        // matters at the zoom where a footprint is only a few pixels across.
-        building: '#f4f1ea',
-        buildingOutline: '#b3a897',
-        // The only thing on this map that is neither shade, structure, nor
-        // route. Muted on purpose: a saturated lake would compete with the one
-        // line the reader is actually meant to follow.
-        water: '#a6c6da',
-        waterLine: '#8cb0c6',
-    },
-    night: {
-        basemap: BLACK,
-        route: '#6b9bff',
-        baseline: '#8a92a2',
-        // On a near-black ground nothing can be darker, so here shade is a cool
-        // tint lighter than the street -- and it is the hue, indigo against the
-        // warm buildings, that says "shade". The legend matters more at night.
-        shadow: '#8f8fe8',
-        canopy: '#5fb784',
-        building: '#36332e',
-        buildingOutline: '#524c43',
-        water: '#1f3440',
-        waterLine: '#2c4a5c',
-    },
+const MAP_PALETTE: Palette = {
+    basemap: GRAYSCALE,
+    route: '#4262ff',
+    baseline: '#9ca3af',
+    shadow: '#525378',
+    canopy: '#2f6e46',
+    building: '#f4f1ea',
+    buildingOutline: '#b3a897',
+    water: '#a6c6da',
+    waterLine: '#8cb0c6',
 }
 
 // The two ends of the walk, and the same two colours the A and B pins are drawn
 // in -- --start and --end in index.css. Deliberately not the route's blue: the
 // building you are leaving from is not part of the line you walk along, and
-// giving them one colour would say that it was. The same in both themes: the
-// pins carry a white letter, and a lighter green would lose it.
-const START_COLOUR = '#15803d'
-const END_COLOUR = '#b91c1c'
+// giving them one colour would say that it was. The pins carry a white letter,
+// and a lighter green would lose it.
+const START_COLOUR = '#26784b'
+const END_COLOUR = '#b84441'
 
 const EMPTY = { type: 'FeatureCollection' as const, features: [] }
 
@@ -142,7 +109,7 @@ const shadowTiles = (time: string) => `pmtiles:///shadows/${stem(time)}.pmtiles`
 const shadowSource = (time: string) => `shadows-${stem(time)}`
 const shadowLayer = (time: string) => `shadow-${stem(time)}`
 
-// How much shade, whichever colour it is drawn in. The same in both themes.
+// How much shade, whichever colour it is drawn in.
 const SHADOW_OPACITY = 0.38
 
 // A crown is not a wall. Tiles tag each blob 'solid' or 'canopy', and canopy is
@@ -176,7 +143,7 @@ const blueWater = (palette: Palette) =>
         return layer
     }
 
-// The basemap under the shadows, in one theme. Its buildings layer is dropped
+// The basemap under the shadows. Its buildings layer is dropped
 // and redrawn above the shadows instead -- see buildingLayers.
 const basemapLayers = (palette: Palette) =>
     layers('protomaps', palette.basemap)
@@ -220,33 +187,6 @@ const buildingLayers = (palette: Palette) => [
     },
 ]
 
-type PaintName = Parameters<maplibregl.Map['setPaintProperty']>[1]
-type PaintValue = Parameters<maplibregl.Map['setPaintProperty']>[2]
-
-// A built map, repainted in another theme. Rebuilding the style would be
-// simpler to write and would throw away the camera, the route and the pins --
-// so instead every colour is set again in place. The basemap flavours share
-// their layer ids and differ only in values, which is what lets the new
-// flavour's paint be copied across property by property.
-const repaint = (map: maplibregl.Map, palette: Palette, stamps: string[]) => {
-    for (const layer of [...basemapLayers(palette), ...labelLayers(palette)]) {
-        if (!layer.paint || !map.getLayer(layer.id)) continue
-        // Object.entries forgets that these keys are paint property names, so
-        // they are told again. They came out of a paint object, so they are.
-        for (const [property, value] of Object.entries(layer.paint)) {
-            map.setPaintProperty(layer.id, property as PaintName, value as PaintValue)
-        }
-    }
-
-    for (const stamp of stamps) {
-        map.setPaintProperty(shadowLayer(stamp), 'fill-color', fillColour(palette))
-    }
-    map.setPaintProperty('buildings', 'fill-color', palette.building)
-    map.setPaintProperty('buildings-outline', 'line-color', palette.buildingOutline)
-    map.setPaintProperty('baseline-line', 'line-color', palette.baseline)
-    map.setPaintProperty('route-line', 'line-color', palette.route)
-}
-
 // A source wants a FeatureCollection; a route is a bare geometry until wrapped.
 const asFeature = (geometry: LineGeometry | undefined) =>
     geometry
@@ -262,6 +202,8 @@ maplibregl.addProtocol('pmtiles', protocol.tile)
 function MapView() {
     const containerRef = useRef<HTMLDivElement>(null)
     const mapRef = useRef<maplibregl.Map | null>(null)
+    const summaryRef = useRef<HTMLDivElement>(null)
+    const mobileResultRef = useRef<string | null>(null)
 
     // The stamp the style was built around. The style is built once, from the
     // manifest, so this is read there rather than recomputed -- a clock that
@@ -271,10 +213,11 @@ function MapView() {
     const [manifest, setManifest] = useState<ShadowManifest | null>(null)
     const [manifestError, setManifestError] = useState<string | null>(null)
     const [time, setTime] = useState(() => nearestStamp(cityMinutes(), WHOLE_HOURS))
-    const [alpha, setAlpha] = useState(INITIAL_ALPHA)
+    const [departureMode, setDepartureMode] = useState<'now' | 'planned'>('now')
+    const [choosingTime, setChoosingTime] = useState(false)
     const [points, setPoints] = useState<LatLon[]>([])
-    const [theme, setTheme] = useTheme()
-    const palette = PALETTES[theme]
+    const [placeNames, setPlaceNames] = useState<Partial<Record<string, string>>>({})
+    const [conditions, setConditions] = useState<{ key: string, preference?: Preference, error?: boolean } | null>(null)
 
     // What the locate button last did, or null if it has nothing to say.
     const [located, setLocated] = useState<Located | null>(null)
@@ -293,6 +236,10 @@ function MapView() {
     const [scanKey, setScanKey] = useState<string | null>(null)
 
     const times = sliderTimes(manifest)
+    const pickDeparture = (chosen: string) => {
+        setDepartureMode('planned')
+        setTime(chosen)
+    }
 
     // A point picked anywhere but on the map is one you have not seen yet, so
     // the map has to go to it -- unlike a clicked one, which is already under
@@ -316,8 +263,8 @@ function MapView() {
             // maplibre answers by zooming out to the whole oblast -- a 2 km
             // walk drawn at 5 km to the centimetre.
             const box = map.getContainer()
-            const side = Math.min(340, box.clientWidth * 0.26)
             const vert = Math.min(90, box.clientHeight * 0.15)
+            const mobile = box.clientWidth <= 720
 
             // Extended rather than written as a pair. fitBounds reads a bare
             // array as [south-west, north-east], so handing it the two points
@@ -329,7 +276,9 @@ function MapView() {
             for (const [lat, lon] of picked) bounds.extend([lon, lat])
 
             map.fitBounds(bounds, {
-                padding: { top: vert, bottom: vert, left: side, right: side },
+                padding: mobile
+                    ? { top: Math.min(90, box.clientHeight * 0.15), bottom: box.clientHeight * 0.43, left: 32, right: 32 }
+                    : { top: vert, bottom: vert, left: Math.min(400, box.clientWidth * 0.42), right: 64 },
                 maxZoom: SEARCH_ZOOM,
             })
         } else {
@@ -340,7 +289,10 @@ function MapView() {
         }
     }
 
-    const pickPlace = (place: Place) => pickPoint(place.point)
+    const pickPlace = (place: Place) => {
+        setPlaceNames(names => ({ ...names, [JSON.stringify(place.point)]: place.label }))
+        pickPoint(place.point)
+    }
 
     // A fix is a point like any other once it is in range -- so it goes through
     // pickPoint, and becomes the start or the destination by the same rule a
@@ -372,7 +324,7 @@ function MapView() {
     // What the controls currently describe. Two points and a clock make a
     // request; anything less makes none.
     const requestKey = manifest && points.length >= 2
-        ? JSON.stringify([points[0], points[1], manifest.date, time, alpha])
+        ? JSON.stringify([points[0], points[1], manifest.date, time])
         : null
 
     // An answer to some earlier question is not an answer to this one.
@@ -395,11 +347,26 @@ function MapView() {
     // time slider does not invalidate one -- which is the point: the chart is
     // what the reader moves the slider *by*.
     const dayKey = manifest && points.length >= 2
-        ? JSON.stringify([points[0], points[1], manifest.date, alpha])
+        ? JSON.stringify([points[0], points[1], manifest.date])
         : null
 
     const dayAnswered = dayAnswer?.key === dayKey ? dayAnswer : null
     const scanning = scanKey !== null && scanKey === dayKey && dayAnswered === null
+
+    const conditionsKey = manifest ? JSON.stringify([manifest.date, time]) : null
+    const currentConditions = conditions?.key === conditionsKey ? conditions : null
+    const preference = plan?.preference ?? currentConditions?.preference ?? null
+
+    // Bring a newly planned walk into the phone's scrollable bottom sheet.
+    // Later clock changes keep the reader at the departure control they used.
+    useEffect(() => {
+        if (points.length < 2) { mobileResultRef.current = null; return }
+        if (!plan || !matchMedia('(max-width: 720px)').matches) return
+        const key = JSON.stringify(points)
+        if (mobileResultRef.current === key) return
+        mobileResultRef.current = key
+        summaryRef.current?.scrollIntoView({ block: 'start' })
+    }, [plan, points])
 
     // A note about how well a fix was known outlives the fix only while the pin
     // it was about is still on the map -- cleared, or pushed off by a third
@@ -424,7 +391,6 @@ function MapView() {
                 const start = nearestStamp(cityMinutes(), sliderTimes(loaded))
                 initialTimeRef.current = start
                 setManifest(loaded)
-                setTime(start)
             })
             .catch((err: Error) => {
                 // An abort is us cancelling on purpose, not a failure.
@@ -433,6 +399,27 @@ function MapView() {
 
         return () => controller.abort()
     }, [])
+
+    useEffect(() => {
+        if (departureMode !== 'now') return
+        const update = () => setTime(nearestStamp(cityMinutes(), sliderTimes(manifest)))
+        update()
+        const timer = setInterval(update, 60_000)
+        return () => clearInterval(timer)
+    }, [departureMode, manifest])
+
+    useEffect(() => {
+        if (!manifest || !conditionsKey) return
+        const controller = new AbortController()
+        const timer = setTimeout(() => {
+            fetchPreference(manifest.date, time, controller.signal)
+                .then(result => setConditions({ key: conditionsKey, preference: result }))
+                .catch((err: Error) => {
+                    if (err.name !== 'AbortError') setConditions({ key: conditionsKey, error: true })
+                })
+        }, DEBOUNCE_MS)
+        return () => { clearTimeout(timer); controller.abort() }
+    }, [manifest, conditionsKey, time])
 
     // --- shadows follow the clock ------------------------------------------
     useEffect(() => {
@@ -457,24 +444,6 @@ function MapView() {
         return () => clearTimeout(timer)
     }, [time, manifest])
 
-    // --- the map follows the theme ------------------------------------------
-    useEffect(() => {
-        const map = mapRef.current
-        if (!map) return
-
-        const paint = () => repaint(map, PALETTES[theme], manifest?.times ?? [])
-
-        // Until the style has loaded there are no layers to set colours on. The
-        // style was built in the theme showing at the time, but the reader may
-        // have switched in the second it takes to arrive -- so paint then.
-        if (map.getLayer('route-line')) {
-            paint()
-            return
-        }
-        map.once('style.load', paint)
-        return () => { map.off('style.load', paint) }
-    }, [theme, manifest])
-
     // --- ask the backend for a route ---------------------------------------
     useEffect(() => {
         // requestKey is null in exactly the cases these guards cover; they are
@@ -491,7 +460,6 @@ function MapView() {
                     // its scored graph on the pair, and this is the one place
                     // that knows the stamp the map is actually showing.
                     hour: Number(time.slice(0, 2)), minute: Number(time.slice(3)),
-                    alpha,
                 },
                 controller.signal)
                 // Tagged with the question it answers. A slow answer for an
@@ -510,7 +478,7 @@ function MapView() {
             clearTimeout(timer)
             controller.abort()
         }
-    }, [requestKey, points, time, alpha, manifest])
+    }, [requestKey, points, time, manifest])
 
     // --- the whole day, when asked for it ----------------------------------
     useEffect(() => {
@@ -526,7 +494,7 @@ function MapView() {
         fetchDayScan(
             {
                 origin: points[0], destination: points[1],
-                date: manifest.date, alpha,
+                date: manifest.date,
             },
             controller.signal)
             .then(result => setDayAnswer({ key: scanKey, plan: result }))
@@ -535,7 +503,7 @@ function MapView() {
             })
 
         return () => controller.abort()
-    }, [scanKey, dayKey, points, alpha, manifest])
+    }, [scanKey, dayKey, points, manifest])
 
     // --- draw whatever came back -------------------------------------------
     useEffect(() => {
@@ -609,8 +577,7 @@ function MapView() {
             element.innerHTML = `<span>${index === 0 ? 'A' : 'B'}</span>`
             element.title = index === 0 ? 'Start' : 'Destination'
 
-            // The element is a square rotated -45deg, so its point is the
-            // bottom corner -- that corner is what has to sit on the coordinate.
+            // MapLibre owns the element's transform for camera placement.
             return new maplibregl.Marker({ element, anchor: 'bottom' })
                 .setLngLat([lon, lat])
                 .addTo(map)
@@ -644,10 +611,7 @@ function MapView() {
         // what the code already guarantees.
         const tileLayer = manifest?.layer ?? ''
 
-        // Read off the page rather than from the `theme` state: this effect
-        // builds the map once and must not rebuild it when the theme changes.
-        // The effect above repaints it instead.
-        const colours = PALETTES[currentTheme()]
+        const colours = MAP_PALETTE
 
         const map = new maplibregl.Map({
             container: containerRef.current,
@@ -789,10 +753,8 @@ function MapView() {
             <header className="panel brand">
                 <span className="brand-mark" aria-hidden="true">
                     <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
-                        stroke="#fff" strokeWidth="2" strokeLinecap="round">
-                        <circle cx="12" cy="12" r="4.2" fill="#fff" stroke="none" />
-                        <path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2
-                            M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6" />
+                        stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M5 19V5h6a4 4 0 0 1 0 8H5m6 0 8 6M17 4l2-2m1 6h2" />
                     </svg>
                 </span>
                 <div>
@@ -803,103 +765,76 @@ function MapView() {
                         at. */}
                     <div className="brand-sub">Astana{manifest && ` \u00b7 ${prettyDate(manifest.date)}`}</div>
                 </div>
-                <ThemeButton theme={theme} onChange={setTheme} />
             </header>
 
-            {/* Clicking the map only works if you can already find the place on
-                it. This is the other way in, and it is the one anybody who does
-                not know Astana by sight has to use. */}
-            <div className="panel search">
-                <SearchBox onPick={pickPlace} next={points.length === 1 ? 'destination' : 'start'} />
-            </div>
+            <div className="panel workspace-note">Astana <span>/</span> Walking map</div>
 
-            <RouteSummary plan={plan} loading={loading} error={error}
-                pointCount={points.length} alpha={alpha} time={time}
-                stamps={manifest?.times ?? []}>
-                <DeparturePlanner
-                    day={dayAnswered?.plan ?? null}
-                    loading={scanning}
-                    error={dayAnswered?.error ?? null}
-                    alpha={alpha}
-                    time={time}
-                    onScan={() => setScanKey(dayKey)}
-                    onPick={setTime} />
-            </RouteSummary>
-
-            <div className="panel dock">
-                <TimeSlider labels={times} value={Math.max(0, times.indexOf(time))}
-                    onChange={index => setTime(times[index])} />
-
-                {/* Past dusk every shadow layer hides and the map goes bare. That is
-                    the honest picture, but an empty map reads as a failure unless
-                    something says why it is empty. */}
-                {!isDaylight(time, manifest) && (
-                    <div className="note note-night">
-                        <svg className="note-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M20.7 14.6A8.6 8.6 0 0 1 9.4 3.3a8.6 8.6 0 1 0 11.3 11.3z" />
-                        </svg>
-                        <span>The sun is down over Astana. Nothing casts a shadow at this hour.</span>
-                    </div>
-                )}
-
-                {/* Without a manifest there is no map at all, so say so rather
-                    than leaving an empty page to be read as a slow load. */}
-                {manifestError && (
-                    <div className="note note-error">
-                        <svg className="note-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M12 2 1.5 20.5h21L12 2zm0 6.5a1 1 0 0 1 1 1v4.8a1 1 0 1 1-2 0V9.5a1 1
-                                0 0 1 1-1zm0 9.2a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4z" />
-                        </svg>
-                        <span>{manifestError}</span>
-                    </div>
-                )}
-
-                <ShadeSlider value={alpha} onChange={setAlpha} />
-
-                {/* Directly above the button that caused it. The same crosshair
-                    on both, so a red panel at the bottom of the dock is tied to
-                    the thing that was just pressed rather than being one more
-                    message about the map in general. */}
-                {locateNote && (
-                    <div className={`note note-${locateNote.tone}`} role="status">
-                        <svg className="note-icon" width="13" height="13" viewBox="0 0 24 24" fill="none"
-                            stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                            <circle cx="12" cy="12" r="7" />
-                            <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none" />
-                            <path d="M12 1.6v3.1M12 19.3v3.1M1.6 12h3.1M19.3 12h3.1" />
-                        </svg>
-                        <span>{locateNote.text}</span>
-                    </div>
-                )}
-
-                <div className="dock-foot">
-                    {/* The map draws two kinds of shade in two colours and never
-                        says so anywhere else. */}
-                    <div className="legend">
-                        <span className="legend-item">
-                            <span className="swatch" style={{ background: palette.shadow }} />building
-                        </span>
-                        <span className="legend-item">
-                            <span className="swatch" style={{ background: palette.canopy }} />tree
-                        </span>
-                    </div>
-                    <div className="dock-actions">
-                        <LocateButton
-                            onFix={takeFix}
-                            onFail={text => setLocated({ tone: 'error', text })}
-                            next={points.length === 1 ? 'destination' : 'start'} />
-
-                        {/* Clears the note too. It is either a caveat about a
-                            pin that is going, or an error about an attempt
-                            nobody is still making. */}
-                        <button className="btn"
-                            onClick={() => { setPoints([]); setLocated(null) }}
-                            disabled={points.length === 0 && !locateNote}>
-                            Clear
+            <aside className="panel planner" aria-label="Walking route planner">
+                <div className="planner-heading">
+                    <h1>Plan a walk</h1>
+                    <p>Pick two places. We’ll find the way.</p>
+                </div>
+                <div className="route-points">
+                    {[0, 1].map(index => {
+                        const point = points[index]
+                        return <div className={`route-point${points.length === index ? ' is-next' : ''}`} key={index}>
+                            <span className={`pin pin-${index === 0 ? 'a' : 'b'}`}>{index === 0 ? 'A' : 'B'}</span>
+                            <div className="point-copy">
+                                <span className="point-label">{index === 0 ? 'From' : 'To'}</span>
+                                <span className="point-value">{point
+                                    ? placeNames[JSON.stringify(point)] ?? `${point[0].toFixed(4)}, ${point[1].toFixed(4)}`
+                                    : index === 0 ? 'Choose a starting point' : 'Choose a destination'}</span>
+                            </div>
+                        </div>
+                    })}
+                </div>
+                <div className="search-section">
+                    <SearchBox onPick={pickPlace} next={points.length === 1 ? 'destination' : 'start'} />
+                </div>
+                <div className="planner-actions">
+                    <LocateButton showLabel onFix={takeFix}
+                        onFail={text => setLocated({ tone: 'error', text })}
+                        next={points.length === 1 ? 'destination' : 'start'} />
+                    <button className="btn" onClick={() => { setPoints([]); setPlaceNames({}); setLocated(null) }}
+                        disabled={points.length === 0 && !locateNote}>Clear</button>
+                </div>
+                {locateNote && <div className={`note note-${locateNote.tone}`} role="status">{locateNote.text}</div>}
+                <section className="departure-controls" aria-label="Departure">
+                    <div className="departure-now">
+                        <span className="departure-label">{departureMode === 'now' ? 'Leaving now' : 'Scheduled departure'}</span>
+                        <strong className="departure-clock">{time}</strong>
+                        <button className="btn departure-toggle" aria-expanded={choosingTime}
+                            aria-controls="departure-editor" onClick={() => setChoosingTime(open => !open)}>
+                            {choosingTime ? 'Done' : 'Choose time'}
                         </button>
                     </div>
+                    {choosingTime && <div className="departure-editor" id="departure-editor">
+                        <TimeSlider labels={times} value={Math.max(0, times.indexOf(time))}
+                            onChange={index => pickDeparture(times[index])} />
+                        <div className="departure-editor-actions">
+                            <button className="btn" onClick={() => { setDepartureMode('now'); setChoosingTime(false) }}>
+                                Use current time
+                            </button>
+                        </div>
+                    </div>}
+                </section>
+                {!isDaylight(time, manifest) && <div className="note note-night">
+                    The sun is down. There are no shadows at this hour.
+                </div>}
+                {manifestError && <div className="note note-error" role="status">
+                    Shadow data is unavailable. The map still works.
+                </div>}
+                <PreferenceCard preference={preference} unavailable={currentConditions?.error ?? false} />
+                <div ref={summaryRef}>
+                    <RouteSummary plan={plan} loading={loading} error={error}
+                        pointCount={points.length} preference={preference} time={time}
+                        stamps={manifest?.times ?? []}>
+                        {choosingTime && <DeparturePlanner day={dayAnswered?.plan ?? null} loading={scanning}
+                            error={dayAnswered?.error ?? null} time={time}
+                            onScan={() => setScanKey(dayKey)} onPick={pickDeparture} />}
+                    </RouteSummary>
                 </div>
-            </div>
+            </aside>
         </div>
     )
 }

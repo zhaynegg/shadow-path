@@ -11,9 +11,10 @@ type LocateButtonProps = {
     // told: the map's rule -- first pick starts, second finishes -- is legible
     // while you are dropping pins and invisible from a button in the corner.
     next: 'start' | 'destination',
+    showLabel?: boolean,
 }
 
-export default function LocateButton({ onFix, onFail, next }: LocateButtonProps) {
+export default function LocateButton({ onFix, onFail, next, showLabel = false }: LocateButtonProps) {
     const [busy, setBusy] = useState(false)
 
     const ask = () => {
@@ -32,7 +33,7 @@ export default function LocateButton({ onFix, onFail, next }: LocateButtonProps)
 
     return (
         <button
-            className={`btn btn-icon${busy ? ' is-busy' : ''}`}
+            className={`btn${showLabel ? ' btn-locate' : ' btn-icon'}${busy ? ' is-busy' : ''}`}
             onClick={ask}
             disabled={busy}
             // The button is an icon, so the name it is read out by and the name
@@ -50,6 +51,7 @@ export default function LocateButton({ onFix, onFail, next }: LocateButtonProps)
                 <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none" />
                 <path d="M12 1.6v3.1M12 19.3v3.1M1.6 12h3.1M19.3 12h3.1" />
             </svg>
+            {showLabel && <span>{busy ? 'Locating…' : 'Use my location'}</span>}
         </button>
     )
 }

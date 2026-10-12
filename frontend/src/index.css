@@ -1,1175 +1,269 @@
-/* ===========================================================================
-   Shadow Path — design layer
-   ---------------------------------------------------------------------------
-   The map is the product; everything in here is the frame around it. Two rules
-   hold the whole sheet together:
-
-   1. The chrome borrows the map's own palette. The route is #2563eb on the
-      canvas, so the route is #2563eb in the legend and in the summary. Shade is
-      indigo, sun is amber, canopy is green -- in both places. A reader should
-      never have to learn a second colour language to read the panel.
-   2. Panels are glass, not paint. They float over a map whose whole job is to
-      be looked at, so they stay translucent and let the city show through
-      rather than cutting a white hole in it.
-
-   There are two themes, Day (:root) and Night ([data-theme="night"] on
-   <html>, set by the script in index.html and by lib/theme.ts). Every colour a
-   rule paints is a variable below, so Night is one block of new values and no
-   second set of rules.
-   ========================================================================= */
-
+/* A map workspace: solid cards, quiet borders and useful accents. */
 :root {
     color-scheme: light;
-
-    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-        "Helvetica Neue", Arial, sans-serif;
-
-    /* The basemap's own ground. The body is painted with it so first paint is
-       not white, and MapView's palette has to agree with it. */
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     --map-ground: #cccccc;
-
-    /* Ink is warm-neutral rather than pure grey: the basemap ground is #cccccc
-       and the buildings are #f4f1ea, and a cold black panel sits on top of that
-       like a sticker. */
-    --ink: #1c1d21;
-    --ink-2: #5c6270;
-    /* The labels and captions. It used to be #8b919e, which is 2.5:1 on glass
-       over a shaded street -- too faint for 10.5px text. This is the lightest
-       grey that still reads at 4.5:1 there, so labels now stand apart from
-       sentences by size and case rather than by being hard to read. */
-    --ink-3: #616775;
-
-    /* Glass. The saturate() is what keeps the map underneath from going milky
-       when it is blurred -- blur alone desaturates, and the city loses its
-       warmth exactly where the panel sits. */
-    --panel-bg: rgba(252, 251, 249, 0.78);
-    --panel-blur: saturate(1.8) blur(20px);
-    --panel-brd: rgba(28, 29, 33, 0.09);
-    --panel-hi: rgba(255, 255, 255, 0.85);
-    --panel-shadow:
-        0 1px 2px rgba(28, 29, 33, 0.06),
-        0 6px 16px -4px rgba(28, 29, 33, 0.12),
-        0 24px 48px -20px rgba(28, 29, 33, 0.22);
-
-    --surface-2: rgba(28, 29, 33, 0.05);
-    --surface-3: rgba(28, 29, 33, 0.09);
-
-    /* Buttons on glass: resting, hovered. */
-    --control-bg: rgba(255, 255, 255, 0.7);
-    --control-hover: #fff;
-    --control-brd-hover: rgba(28, 29, 33, 0.18);
-
-    /* Straight off the map. See MapView.tsx. */
-    --route: #2563eb;
+    --ink: #202124;
+    --ink-2: #5f6168;
+    --ink-3: #696b73;
+    --panel-bg: #ffffff;
+    --panel-brd: #dedfe3;
+    --panel-shadow: 0 2px 8px rgba(24, 27, 36, 0.08);
+    --surface-2: #f5f5f7;
+    --surface-3: #e4e5e9;
+    --control-hover: #f2f3f5;
+    --route: #4262ff;
     --baseline: #9ca3af;
-    --shade: #3b3b6d;
+    --shade: #525378;
     --canopy: #2f6e46;
-    --sun: #e8963c;
-    --danger: #b91c1c;
-    --start: #15803d;
-    --end: #b91c1c;
-
-    /* The route's blue, thinned, for the one button that acts on a route. */
-    --route-tint: rgba(37, 99, 235, 0.09);
-    --route-tint-hover: rgba(37, 99, 235, 0.15);
-    --route-line: rgba(37, 99, 235, 0.28);
-
-    /* Solid, not the half-transparent blue it used to be: at 50% it was 2:1
-       against the glass, and a focus ring has to reach 3:1 to be found. */
-    --focus-ring: #2563eb;
-
-    --danger-ink: #7f1d1d;
-    --danger-soft: rgba(185, 28, 28, 0.09);
-    --danger-line: rgba(185, 28, 28, 0.18);
-
-    /* The note that says the sun is down. */
-    --night: #1d2036;
-    --night-hi: #2b2f4e;
-    --night-ink: #e8e9f4;
-
-    /* Letters on the A and B pins. */
-    --on-color: #fff;
-
-    /* The preference slider's pale middle, and the tick at its zero. */
-    --track-sun-soft: #f0c894;
-    --track-neutral: #ded9d2;
-    --track-shade-soft: #9a9ac4;
-    --detent: rgba(28, 29, 33, 0.28);
-
-    /* The brand mark is the product in one square, and the same square in
-       every theme -- so it has colours of its own rather than --sun and
-       --shade, which Night lightens. */
-    --mark-sun: #e8963c;
-    --mark-mid: #b4763f;
-    --mark-shade: #3b3b6d;
-
-    --mark-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35),
-                   0 2px 6px rgba(59, 59, 109, 0.3);
-    --track-inset: inset 0 0 0 1px rgba(28, 29, 33, 0.1),
-                   inset 0 1px 2px rgba(28, 29, 33, 0.14);
-    --thumb-shadow: 0 1px 2px rgba(28, 29, 33, 0.2),
-                    0 3px 8px -2px rgba(28, 29, 33, 0.28);
-    --pin-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3),
-                  0 1px 3px rgba(28, 29, 33, 0.3);
-    --marker-shadow: 0 2px 5px rgba(28, 29, 33, 0.35);
-
-    --r-sm: 7px;
-    --r-md: 11px;
-    --r-lg: 16px;
-
+    --sun: #c4872b;
+    --start: #26784b;
+    --end: #b84441;
+    --brand-yellow: #ffda33;
+    --route-tint: #f0f3ff;
+    --route-tint-hover: #e7edff;
+    --route-line: #bcc9ff;
+    --primary-bg: #4262ff;
+    --primary-hover: #344fe0;
+    --primary-ink: #ffffff;
+    --focus-ring: #4262ff;
+    --danger: #b63b36;
+    --danger-ink: #91302c;
+    --danger-soft: #fff2f0;
+    --danger-line: #efd1cd;
+    --night: #f0f0f7;
+    --night-ink: #4c4c6a;
+    --on-color: #ffffff;
+    --marker-shadow: 0 2px 5px rgba(24, 27, 36, 0.25);
     --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
-/* Night: the same rules, repainted for a dark map. The hues keep their meaning
-   and are lifted until they read on dark glass -- every text colour here holds
-   4.5:1 over any ground, every mark 3:1. The pins keep their Day fills so the
-   white letter stays legible, and get a white ring instead so the disc can be
-   found on a dark panel. */
-:root[data-theme="night"] {
-    color-scheme: dark;
-
-    --map-ground: #141414;
-
-    --ink: #eceef3;
-    --ink-2: #b3b9c6;
-    --ink-3: #9aa1b0;
-
-    --panel-bg: rgba(30, 32, 40, 0.78);
-    --panel-brd: rgba(255, 255, 255, 0.1);
-    --panel-hi: rgba(255, 255, 255, 0.08);
-    --panel-shadow:
-        0 1px 2px rgba(0, 0, 0, 0.3),
-        0 6px 16px -4px rgba(0, 0, 0, 0.4),
-        0 24px 48px -20px rgba(0, 0, 0, 0.6);
-
-    --surface-2: rgba(255, 255, 255, 0.06);
-    --surface-3: rgba(255, 255, 255, 0.12);
-
-    --control-bg: rgba(255, 255, 255, 0.08);
-    --control-hover: rgba(255, 255, 255, 0.16);
-    --control-brd-hover: rgba(255, 255, 255, 0.24);
-
-    --route: #6b9bff;
-    --baseline: #8a92a2;
-    --shade: #8f8fe8;
-    --canopy: #5fb784;
-    --sun: #f0a656;
-    /* Lifted to read as text. --end stays dark red: it carries a white B. */
-    --danger: #f58b8b;
-
-    --route-tint: rgba(107, 155, 255, 0.16);
-    --route-tint-hover: rgba(107, 155, 255, 0.24);
-    --route-line: rgba(107, 155, 255, 0.4);
-    --focus-ring: #9dbcff;
-
-    --danger-ink: #fcb4b4;
-    --danger-soft: rgba(245, 139, 139, 0.14);
-    --danger-line: rgba(245, 139, 139, 0.32);
-
-    /* Lighter than Day's, or it would vanish into a dark dock. */
-    --night: #3c4078;
-    --night-hi: #50559a;
-    --night-ink: #f0f1fa;
-
-    --track-sun-soft: #a8784a;
-    --track-neutral: #4d4c55;
-    --track-shade-soft: #5f5fa6;
-    --detent: rgba(255, 255, 255, 0.45);
-
-    --mark-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35),
-                   0 2px 6px rgba(0, 0, 0, 0.45);
-    --track-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.08),
-                   inset 0 1px 2px rgba(0, 0, 0, 0.4);
-    --thumb-shadow: 0 1px 2px rgba(0, 0, 0, 0.4),
-                    0 3px 8px -2px rgba(0, 0, 0, 0.5);
-    --pin-shadow: 0 0 0 1.5px #fff,
-                  inset 0 1px 0 rgba(255, 255, 255, 0.3),
-                  0 1px 3px rgba(0, 0, 0, 0.5);
-    --marker-shadow: 0 2px 5px rgba(0, 0, 0, 0.6);
-}
-
 * { box-sizing: border-box; }
-
-html, body, #root {
-    margin: 0;
-    height: 100%;
-}
-
-body {
-    font-family: var(--font-sans);
-    color: var(--ink);
-    /* ss01/cv05 quiet down Inter's single-storey oddities at small sizes; the
-       harmless no-op elsewhere. */
-    font-feature-settings: "ss01", "cv05";
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    background: var(--map-ground); /* so first paint is not white */
-}
-
-/* --- shell ------------------------------------------------------------- */
-
-.app {
-    position: relative;
-    height: 100%;
-    overflow: hidden;
-}
-
-.map-canvas {
-    position: absolute;
-    inset: 0;
-}
-
-/* Panels float above the map (z 1) but below nothing else; maplibre's own
-   controls live at z 2 by default and are pulled into line further down. */
+html, body, #root { margin: 0; width: 100%; height: 100%; }
+body { font-family: var(--font-sans); color: var(--ink); -webkit-font-smoothing: antialiased; background: var(--map-ground); }
+button, input, select { font: inherit; }
+button, input, select, a { -webkit-tap-highlight-color: transparent; }
+.app { position: relative; height: 100%; overflow: hidden; }
+.map-canvas { position: absolute; inset: 0; }
 .panel {
     position: absolute;
     z-index: 2;
     background: var(--panel-bg);
-    -webkit-backdrop-filter: var(--panel-blur);
-    backdrop-filter: var(--panel-blur);
     border: 1px solid var(--panel-brd);
-    /* The inset highlight is the whole trick that makes glass read as glass:
-       a lit top edge, as if the panel had thickness. */
-    box-shadow: var(--panel-shadow), inset 0 1px 0 var(--panel-hi);
-    border-radius: var(--r-lg);
+    border-radius: 8px;
+    box-shadow: var(--panel-shadow);
     font-size: 13px;
     line-height: 1.45;
 }
 
-/* --- brand ------------------------------------------------------------- */
+/* Workspace header */
+.brand { top: 24px; left: 24px; width: 336px; min-height: 56px; display: flex; align-items: center; gap: 11px; padding: 10px 12px; }
+.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; flex-shrink: 0; border-radius: 4px; background: var(--brand-yellow); color: #202124; }
+.brand-title { font-size: 15px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.3; }
+.brand-sub { margin-top: 1px; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.workspace-note { top: 24px; right: 24px; padding: 10px 14px; color: var(--ink-2); font-size: 12px; }
+.workspace-note strong { color: var(--ink); font-weight: 600; }
 
-.brand {
-    top: 16px;
-    left: 16px;
-    padding: 10px 14px 10px 11px;
-    display: flex;
-    align-items: center;
-    gap: 11px;
-}
-
-.brand-mark {
-    width: 34px;
-    height: 34px;
-    flex-shrink: 0;
-    border-radius: 10px;
-    display: grid;
-    place-items: center;
-    /* Sun to shade, on the diagonal. The mark is the product in one square. */
-    background: linear-gradient(135deg, var(--mark-sun) 0%, var(--mark-mid) 42%, var(--mark-shade) 100%);
-    box-shadow: var(--mark-shadow);
-}
-
-.brand-title {
-    font-size: 14px;
-    font-weight: 650;
-    letter-spacing: -0.012em;
-    line-height: 1.2;
-}
-
-.brand-sub {
-    font-size: 11.5px;
-    color: var(--ink-3);
-    letter-spacing: 0.005em;
-    font-variant-numeric: tabular-nums;
-}
-
-/* --- search ------------------------------------------------------------ */
-
-/* Directly under the brand, which is where a reader who cannot find their
-   street on sight looks first. The input *is* the panel -- no padding of its
-   own -- so the glass reads as a single field rather than as a box with a box
-   inside it. */
-.search {
-    top: 84px;
-    left: 16px;
-    width: 296px;
-    padding: 0;
-}
-
-.search-wrap { position: relative; }
-
-.search-icon {
-    position: absolute;
-    left: 13px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--ink-3);
-    pointer-events: none;
-}
-
-.search-input {
-    width: 100%;
-    border: 0;
-    background: none;
-    font-family: inherit;
-    font-size: 13px;
-    color: var(--ink);
-    padding: 11px 13px 11px 35px;
-    border-radius: var(--r-lg);
-    outline: none;
-    -webkit-appearance: none;
-    appearance: none;
-}
-
-.search-input::placeholder { color: var(--ink-3); }
-
-/* Safari and Chrome draw their own grey X inside type="search", in their own
-   metrics and nobody else's palette. */
-.search-input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
-
-.search-input:focus-visible { box-shadow: inset 0 0 0 2px var(--focus-ring); }
-
-/* Its own sheet of glass, below the field. It is not inside the panel: a list
-   of six results is taller than the field it drops from, and a panel that grew
-   to hold it would push the dock down the screen every time somebody typed. */
-.search-drop {
-    position: absolute;
-    top: calc(100% + 7px);
-    left: 0;
-    right: 0;
-    max-height: 296px;
+/* One readable place to plan the walk. */
+.planner {
+    top: 94px;
+    left: 24px;
+    width: 336px;
+    max-height: calc(100% - 118px);
     overflow-y: auto;
-    background: var(--panel-bg);
-    -webkit-backdrop-filter: var(--panel-blur);
-    backdrop-filter: var(--panel-blur);
-    border: 1px solid var(--panel-brd);
-    border-radius: var(--r-md);
-    box-shadow: var(--panel-shadow), inset 0 1px 0 var(--panel-hi);
-    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--surface-3) transparent;
+    padding: 20px;
 }
-
-.search-note {
-    margin: 0;
-    padding: 11px 14px;
-    font-size: 12.5px;
-    color: var(--ink-2);
-}
-
-.search-note.is-error { color: var(--danger); }
-
-.search-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-}
-
-.search-hit {
-    padding: 9px 14px;
-    cursor: pointer;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-}
-
-.search-hit + .search-hit { border-top: 1px solid var(--panel-brd); }
-
-/* One highlight for both the cursor and the arrow keys: hover sets the same
-   active row Enter would take, so the two never point at different results. */
-.search-hit.is-active { background: var(--surface-2); }
-
-.search-hit-name {
-    font-size: 13px;
-    line-height: 1.3;
-}
-
-.search-hit-where {
-    font-size: 11.5px;
-    color: var(--ink-3);
-    line-height: 1.3;
-}
-
-/* --- dock (the controls) ----------------------------------------------- */
-
-.dock {
-    bottom: 16px;
-    left: 16px;
-    width: 296px;
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-
-.field-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-    margin-bottom: 9px;
-}
-
-.field-label {
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 0.075em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-}
-
-.field-value {
-    font-size: 13px;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.01em;
-}
-
-.field-value.is-clock {
-    font-size: 17px;
-    font-weight: 660;
-    letter-spacing: -0.02em;
-}
-
-.field-foot {
-    margin-top: 7px;
-    display: flex;
-    justify-content: space-between;
-    font-size: 11px;
-    color: var(--ink-3);
-}
-
-/* --- range inputs ------------------------------------------------------ */
-
-/* One class for both sliders. The track paints itself from --track, which each
-   component sets to a gradient of its own meaning: hours of the day for the
-   clock, sun-to-shade for the preference. The thumb is deliberately plain --
-   the track is already carrying colour, and a coloured thumb on a coloured
-   track leaves nothing for the eye to hold on to. */
-.range {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 100%;
-    height: 22px;
-    margin: 0;
-    background: transparent;
-    cursor: grab;
-    display: block;
-}
-
-.range:active { cursor: grabbing; }
-
-.range::-webkit-slider-runnable-track {
-    height: 8px;
-    border-radius: 999px;
-    background: var(--track, var(--surface-3));
-    box-shadow: var(--track-inset);
-}
-
-.range::-moz-range-track {
-    height: 8px;
-    border-radius: 999px;
-    background: var(--track, var(--surface-3));
-    box-shadow: var(--track-inset);
-}
-
-.range::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 18px;
-    height: 18px;
-    margin-top: -5px; /* (8px track - 18px thumb) / 2 */
-    border-radius: 50%;
-    background: #fff;
-    border: 1px solid rgba(28, 29, 33, 0.16);
-    box-shadow: var(--thumb-shadow);
-    transition: transform 120ms var(--ease), box-shadow 120ms var(--ease);
-}
-
-.range::-moz-range-thumb {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #fff;
-    border: 1px solid rgba(28, 29, 33, 0.16);
-    box-shadow: var(--thumb-shadow);
-    transition: transform 120ms var(--ease), box-shadow 120ms var(--ease);
-}
-
-.range:hover::-webkit-slider-thumb { transform: scale(1.1); }
-.range:hover::-moz-range-thumb { transform: scale(1.1); }
-.range:active::-webkit-slider-thumb { transform: scale(1.16); }
-.range:active::-moz-range-thumb { transform: scale(1.16); }
-
-/* Keyboard focus only -- a ring that appears on every click is noise, but a
-   slider with no visible focus is unusable without a mouse. */
-.range:focus { outline: none; }
-.range:focus-visible::-webkit-slider-thumb {
-    box-shadow: 0 0 0 3px var(--focus-ring), var(--thumb-shadow);
-}
-.range:focus-visible::-moz-range-thumb {
-    box-shadow: 0 0 0 3px var(--focus-ring), var(--thumb-shadow);
-}
-
-/* The detent under the shade slider's centre: alpha 0 is "shortest path", a
-   real position worth being able to find by eye. */
-.range-wrap { position: relative; }
-
-.range-detent {
-    position: absolute;
-    top: 3px;
-    left: 50%;
-    width: 1px;
-    height: 8px;
-    margin-left: -0.5px;
-    border-radius: 1px;
-    background: var(--detent);
-    pointer-events: none;
-}
-
-/* --- notes, badges ----------------------------------------------------- */
-
-.note {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 9px 11px;
-    border-radius: var(--r-md);
-    font-size: 12px;
-    line-height: 1.4;
-}
-
-.note-night {
-    color: var(--night-ink);
-    background: linear-gradient(135deg, var(--night-hi), var(--night));
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
-}
-
-.note-error {
-    color: var(--danger-ink);
-    background: var(--danger-soft);
-    box-shadow: inset 0 0 0 1px var(--danger-line);
-}
-
-/* Not a failure, so not red: a fix good to a kilometre worked exactly as asked.
-   Ink rather than colour, because what it is telling you is a caveat about a
-   pin that is already on the map, not something to go and fix. */
-.note-info {
-    color: var(--ink-2);
-    background: var(--surface-2);
-    box-shadow: inset 0 0 0 1px var(--panel-brd);
-}
-
-.note-icon { flex-shrink: 0; margin-top: 1px; }
-
-/* --- buttons ----------------------------------------------------------- */
-
-.btn {
-    font: inherit;
-    font-size: 12px;
-    font-weight: 550;
-    color: var(--ink-2);
-    padding: 6px 12px;
-    border-radius: 999px;
-    border: 1px solid var(--panel-brd);
-    background: var(--control-bg);
-    cursor: pointer;
-    transition: background 120ms var(--ease), color 120ms var(--ease),
-                border-color 120ms var(--ease), transform 120ms var(--ease);
-}
-
-.btn:hover:not(:disabled) {
-    color: var(--ink);
-    background: var(--control-hover);
-    border-color: var(--control-brd-hover);
-}
-
-.btn:active:not(:disabled) { transform: translateY(1px); }
-
-.btn:disabled {
-    opacity: 0.45;
-    cursor: default;
-}
-
-.btn:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: 2px;
-}
-
-/* Square, because its label is a picture. The dock is 296px wide and its foot
-   already carries a legend and Clear; a button reading "Use my location" there
-   costs the legend its second line. The crosshair is the one map icon that
-   needs no words anywhere in the world. */
-.btn-icon {
-    display: grid;
-    place-items: center;
-    width: 29px;
-    height: 29px;
-    padding: 0;
-    flex-shrink: 0;
-}
-
-/* The theme switch, at the far end of the brand panel. On a phone the panel is
-   the width of the screen and this pushes it to the right edge; on a desktop the
-   panel is only as wide as its contents, and the auto margin costs nothing. */
-.brand-theme { margin-left: auto; }
-
-/* Full strength while the device thinks, against .btn:disabled's 0.45 -- it is
-   working, not unavailable, and fading it says the opposite. */
-.btn-icon.is-busy {
-    opacity: 1;
-    cursor: progress;
-}
-
-/* The ring is cut to a short arc in the markup while busy, so spinning it reads
-   as a spinner; at rest it is a whole circle and this does nothing. */
-.btn-icon.is-busy .locate-ring {
-    transform-origin: 12px 12px;
-    animation: locate-spin 900ms linear infinite;
-}
-
-@keyframes locate-spin {
-    to { transform: rotate(360deg); }
-}
-
-/* Somebody who has asked not to see motion still needs to know it is working.
-   The arc stays, and pulses where it would have spun. */
-@media (prefers-reduced-motion: reduce) {
-    .btn-icon.is-busy .locate-ring { animation: locate-pulse 1.1s ease-in-out infinite; }
-
-    @keyframes locate-pulse {
-        50% { opacity: 0.25; }
-    }
-}
-
-/* --- legend ------------------------------------------------------------ */
-
-.dock-foot {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding-top: 14px;
-    border-top: 1px solid var(--panel-brd);
-}
-
-.legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 12px;
-    font-size: 11px;
-    color: var(--ink-2);
-}
-
-/* Kept together at the right end so the legend, which wraps, cannot get between
-   them. Both act on the two pins, and reading as one group says so. */
-.dock-actions {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    flex-shrink: 0;
-}
-
-.legend-item {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    white-space: nowrap;
-}
-
-.swatch {
-    width: 9px;
-    height: 9px;
-    border-radius: 2.5px;
-    flex-shrink: 0;
-    box-shadow: inset 0 0 0 1px rgba(28, 29, 33, 0.14);
-}
-
-/* --- summary ----------------------------------------------------------- */
-
-.summary {
-    top: 16px;
-    right: 16px;
-    width: 314px;
-    padding: 14px 16px 15px;
-}
-
-.summary-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-bottom: 12px;
-}
-
-.summary-title {
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 0.075em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-}
-
-/* Empty and loading states get the same vertical room as a filled card, so
-   the panel does not jump in height the moment a route arrives. */
-.summary-hint {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    color: var(--ink-2);
-    font-size: 12.5px;
-    min-height: 34px;
-}
-
-.pin {
-    width: 20px;
-    height: 20px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    font-size: 10px;
-    font-weight: 700;
-    color: var(--on-color);
-    box-shadow: var(--pin-shadow);
-}
-
+.planner-heading h1 { margin: 0; font-size: 23px; line-height: 1.2; font-weight: 650; letter-spacing: -0.045em; }
+.planner-heading p { margin: 7px 0 20px; color: var(--ink-2); font-size: 12px; line-height: 1.5; }
+.route-points { display: grid; gap: 8px; }
+.route-point { display: flex; align-items: center; gap: 11px; padding: 10px 11px; min-height: 56px; border: 1px solid var(--panel-brd); border-radius: 6px; }
+.route-point.is-next { border-color: var(--route-line); background: var(--route-tint); }
+.point-copy { flex: 1; min-width: 0; }
+.point-label { display: block; font-size: 10px; color: var(--ink-3); line-height: 1.3; }
+.point-label span { margin-left: 5px; }
+.point-value { display: block; margin-top: 3px; font-size: 12px; color: var(--ink); overflow-wrap: anywhere; line-height: 1.35; }
+.route-point.is-next .point-value { color: var(--ink-2); }
+.pin { display: grid; place-items: center; width: 23px; height: 23px; flex-shrink: 0; border-radius: 5px; color: var(--on-color); font-size: 11px; font-weight: 650; }
 .pin-a { background: var(--start); }
 .pin-b { background: var(--end); }
 
-/* --- stat rows --------------------------------------------------------- */
+.search-section { margin-top: 12px; }
+.search-wrap { position: relative; }
+.search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--ink-3); pointer-events: none; }
+.search-input { width: 100%; min-height: 40px; padding: 10px 12px 10px 35px; border: 1px solid var(--panel-brd); border-radius: 6px; outline: none; background: var(--panel-bg); color: var(--ink); font-size: 12px; appearance: none; }
+.search-input::placeholder { color: var(--ink-3); }
+.search-input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+.search-input:focus-visible { border-color: var(--focus-ring); box-shadow: 0 0 0 2px var(--route-tint-hover); }
+.search-drop { position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 5; max-height: 240px; overflow: auto; background: var(--panel-bg); border: 1px solid var(--panel-brd); border-radius: 6px; box-shadow: var(--panel-shadow); }
+.search-note { margin: 0; padding: 12px; color: var(--ink-2); font-size: 12px; }
+.search-note.is-error { color: var(--danger); }
+.search-list { list-style: none; margin: 0; padding: 4px; }
+.search-hit { padding: 9px 8px; border-radius: 3px; cursor: pointer; display: flex; flex-direction: column; gap: 3px; }
+.search-hit.is-active { background: var(--surface-2); }
+.search-hit-name { font-size: 12px; line-height: 1.35; }
+.search-hit-where { font-size: 11px; line-height: 1.35; color: var(--ink-3); }
+.planner-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.planner-actions .btn:not(.btn-icon) { flex: 1; }
+.planner > .note { margin-top: 10px; }
 
-.stat {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 3px 10px;
-    padding: 9px 0;
-}
+/* A departure can be scheduled only after the time editor is opened. */
+.departure-controls { margin-top: 18px; }
+.departure-now { display: flex; align-items: center; gap: 8px; min-height: 34px; }
+.departure-label { color: var(--ink-2); font-size: 12px; }
+.departure-clock { color: var(--ink); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.departure-toggle { margin-left: auto; font-size: 11px; white-space: nowrap; }
+.departure-editor { margin-top: 10px; padding: 12px; border: 1px solid var(--panel-brd); border-radius: 6px; background: var(--surface-2); }
+.departure-editor-actions { display: flex; align-items: center; margin-top: 10px; }
+.departure-editor-actions .btn { min-height: 30px; font-size: 11px; }
+.departure-controls .note { margin-top: 10px; }
 
+/* The preference is an explanation, never a setting. */
+.weather-policy { display: flex; align-items: flex-start; gap: 11px; margin-top: 20px; padding: 16px 0; border-top: 1px solid var(--panel-brd); border-bottom: 1px solid var(--panel-brd); }
+.policy-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 5px; flex-shrink: 0; color: var(--ink); background: var(--surface-2); }
+.policy-copy { min-width: 0; flex: 1; }
+.policy-title { margin: 0; color: var(--ink); font-size: 13px; font-weight: 600; line-height: 1.35; }
+.policy-reason { margin: 5px 0 0; font-size: 12px; line-height: 1.5; color: var(--ink-2); }
+.policy-weather { display: block; margin-top: 8px; color: var(--ink-2); font-size: 11px; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.policy-source { display: block; margin-top: 4px; color: var(--ink-3); font-size: 11px; line-height: 1.4; text-underline-offset: 2px; }
+.policy-source a { color: inherit; }
+
+/* Shared time fields, shown within the optional departure editor. */
+.field-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.field-label { color: var(--ink-2); font-size: 12px; font-weight: 500; }
+.field-value { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.field-value.is-clock { font-size: 19px; letter-spacing: -0.04em; line-height: 1.2; }
+.field-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; color: var(--ink-3); font-size: 10px; font-variant-numeric: tabular-nums; }
+.range { appearance: none; -webkit-appearance: none; width: 100%; height: 24px; margin: 0; background: transparent; display: block; cursor: grab; }
+.range:active { cursor: grabbing; }
+.range::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--surface-3); }
+.range::-moz-range-track { height: 4px; border-radius: 2px; background: var(--surface-3); }
+.range::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 16px; height: 16px; margin-top: -6px; border-radius: 50%; background: var(--route); border: 3px solid var(--panel-bg); box-shadow: 0 0 0 1px var(--route); }
+.range::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; background: var(--route); border: 3px solid var(--panel-bg); box-shadow: 0 0 0 1px var(--route); }
+.range:focus { outline: none; }
+.range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--focus-ring); }
+.range:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--focus-ring); }
+
+/* Shared controls and feedback */
+.btn { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 7px 11px; border: 1px solid var(--panel-brd); border-radius: 6px; background: var(--panel-bg); color: var(--ink); font-size: 12px; font-weight: 500; cursor: pointer; transition: background 120ms var(--ease), border-color 120ms var(--ease); }
+.btn:hover:not(:disabled) { background: var(--control-hover); border-color: var(--ink-3); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn:focus-visible, .depart-pick:focus-visible, .depart-select select:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.btn-icon { width: 34px; height: 34px; padding: 0; flex-shrink: 0; }
+.btn-locate { gap: 7px; }
+.btn-locate.is-busy .locate-ring { transform-origin: 12px 12px; animation: spin 900ms linear infinite; }
+.btn-icon.is-busy { opacity: 1; cursor: progress; }
+.btn-icon.is-busy .locate-ring { transform-origin: 12px 12px; animation: spin 900ms linear infinite; }
+.btn-wide { display: flex; width: 100%; background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary-ink); }
+.btn-wide:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
+.note { display: flex; align-items: flex-start; gap: 8px; padding: 10px 11px; border-radius: 5px; font-size: 12px; line-height: 1.45; }
+.note-icon { flex-shrink: 0; margin-top: 2px; }
+.note-night { color: var(--night-ink); background: var(--night); }
+.note-error { color: var(--danger-ink); background: var(--danger-soft); border: 1px solid var(--danger-line); }
+.note-info { color: var(--ink-2); background: var(--surface-2); }
+
+/* Results use the same marks as the route on the map. */
+.summary { margin-top: 20px; }
+.summary-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+.summary-title { color: var(--ink); font-size: 13px; font-weight: 600; }
+.summary-hint { display: flex; align-items: center; gap: 9px; min-height: 38px; color: var(--ink-2); font-size: 12px; line-height: 1.5; }
+.summary-hint .pin { width: 20px; height: 20px; font-size: 10px; }
+.summary-error { color: var(--danger); font-size: 12px; }
+.summary-primary { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 12px 0 3px; }
+.summary-duration { font-size: 28px; line-height: 1.2; font-weight: 600; letter-spacing: -0.05em; font-variant-numeric: tabular-nums; }
+.summary-mode { color: var(--ink-2); font-size: 11px; }
+.summary-meta { color: var(--ink-3); font-size: 11px; line-height: 1.4; margin-bottom: 10px; }
+.stat { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; padding: 10px 0; }
 .stat + .stat { border-top: 1px solid var(--panel-brd); }
+.stat-name { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
+.stat-dist { color: var(--ink-2); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.stat-far { color: var(--ink-3); font-size: 10px; }
+.stat-far::before { content: " · "; }
+.stat-bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 9px; margin-top: 2px; }
+.bar { flex: 1; height: 5px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.bar-fill { display: block; height: 100%; border-radius: 2px; transition: width 240ms var(--ease); }
+.stat-share { width: 66px; flex-shrink: 0; color: var(--ink-2); font-size: 10px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dash { width: 10px; flex-shrink: 0; border-top: 2px dashed var(--baseline); }
+.line { width: 10px; height: 3px; flex-shrink: 0; background: var(--route); }
+.verdict { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--panel-brd); color: var(--ink-2); font-size: 12px; line-height: 1.5; }
+.arrival { margin-top: 6px; color: var(--ink-2); font-size: 12px; line-height: 1.5; }
+.arrival.drift { margin-top: 4px; color: var(--ink-3); font-size: 11px; }
+.verdict strong, .arrival strong { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
 
-.stat-name {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 12.5px;
-    font-weight: 550;
-}
-
-.stat-dist {
-    font-size: 12.5px;
-    font-variant-numeric: tabular-nums;
-    color: var(--ink-2);
-    text-align: right;
-}
-
-/* The distance, behind the minutes rather than instead of them. Still there --
-   somebody who knows the city reads 1.65 km faster than they read 22 min -- but
-   the smaller of the two, because it is the one that needs converting. */
-.stat-far {
-    color: var(--ink-3);
-    font-size: 11.5px;
-}
-
-.stat-far::before {
-    content: " · ";
-}
-
-.stat-bar {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    margin-top: 2px;
-}
-
-/* The bar is the comparison. Two rows, same scale, and the difference between
-   the routes is a length you can see without reading a number. */
-.bar {
-    flex: 1;
-    height: 6px;
-    border-radius: 999px;
-    background: var(--surface-2);
-    box-shadow: inset 0 0 0 1px rgba(28, 29, 33, 0.07);
-    overflow: hidden;
-}
-
-.bar-fill {
-    /* A percentage width is ignored on an inline box, and a <span> is inline
-       until told otherwise -- so without this the fill is always zero wide. */
-    display: block;
-    height: 100%;
-    border-radius: 999px;
-    transition: width 320ms var(--ease);
-}
-
-.stat-share {
-    font-size: 11.5px;
-    font-variant-numeric: tabular-nums;
-    color: var(--ink-2);
-    /* Wide enough for "100% shade" on one line. Wrapping it doubles the row's
-       height, and the two rows then stop lining up with each other. */
-    width: 68px;
-    white-space: nowrap;
-    text-align: right;
-    flex-shrink: 0;
-}
-
-.dash {
-    width: 10px;
-    height: 0;
-    flex-shrink: 0;
-    border-top: 2px dashed var(--baseline);
-}
-
-.line {
-    width: 10px;
-    height: 3px;
-    flex-shrink: 0;
-    border-radius: 2px;
-    background: var(--route);
-}
-
-.verdict {
-    margin-top: 11px;
-    padding-top: 11px;
-    border-top: 1px solid var(--panel-brd);
-    font-size: 12.5px;
-    color: var(--ink-2);
-}
-
-.verdict strong {
-    color: var(--ink);
-    font-weight: 620;
-    font-variant-numeric: tabular-nums;
-}
-
-/* Set apart from the verdict above it, which is about the choice between two
-   routes; this is about the one you took. */
-.arrival {
-    margin-top: 7px;
-    font-size: 12.5px;
-    color: var(--ink-2);
-}
-
-.arrival strong {
-    color: var(--ink);
-    font-weight: 620;
-    font-variant-numeric: tabular-nums;
-}
-
-/* The second line of the arrival: quieter, because it is a caveat on the first
-   rather than another fact. */
-.arrival.drift {
-    margin-top: 4px;
-    font-size: 12px;
-    color: var(--ink-3);
-}
-
-.arrival.drift strong { color: var(--ink-2); font-weight: 600; }
-
-.summary-error { color: var(--danger); font-size: 12.5px; }
-
-/* --- departure chart --------------------------------------------------- */
-
-/* Everything below the verdict, set off from it the way the stat rows are set
-   off from each other -- it is a second question about the same walk, not more
-   of the answer to the first. */
-.depart-slot,
-.depart {
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid var(--panel-brd);
-}
-
-.btn-wide {
-    display: block;
-    width: 100%;
-}
-
-/* Scaled by width, aspect ratio kept: the panel is 314px on a desktop and the
-   full width of a phone, and the chart should be the same picture in both
-   rather than a stretched one. */
-.chart {
-    display: block;
-    width: 100%;
-    height: auto;
-    overflow: visible;
-}
-
-.chart-area {
-    opacity: 0.13;
-}
-
-.chart-route {
-    fill: none;
-    stroke: var(--route);
-    stroke-width: 1.8;
-    stroke-linejoin: round;
-    stroke-linecap: round;
-}
-
-/* The grey dashed line on the map, the dash in the stat row, and this: one
-   walk, marked the same way in all three places. */
-.chart-direct {
-    fill: none;
-    stroke: var(--baseline);
-    stroke-width: 1.4;
-    stroke-dasharray: 3 3;
-    stroke-linecap: round;
-}
-
-/* Where the time slider is standing. Faint on purpose -- it is a cross
-   reference between two controls, not a third thing to read. */
-.chart-now {
-    stroke: var(--ink-3);
-    stroke-width: 1;
-    stroke-dasharray: 2 3;
-    opacity: 0.55;
-}
-
-.chart-best {
-    fill: var(--route);
-    stroke: #fff;
-    stroke-width: 1.6;
-}
-
-/* Invisible, and the whole width of the chart between them. A chart you have
-   just read the shape of should be a chart you can point at. */
-.chart-hit {
-    fill: transparent;
-    cursor: pointer;
-}
-
-.chart-hit:hover {
-    fill: var(--ink);
-    fill-opacity: 0.05;
-}
-
-/* The recommendation, and a button because it is also the way to act on it:
-   pressing it moves the map and the shadows to that hour. */
-.depart-pick {
-    font: inherit;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    width: 100%;
-    margin-top: 10px;
-    padding: 8px 11px;
-    border-radius: var(--r-md);
-    border: 1px solid transparent;
-    background: var(--route-tint);
-    color: var(--ink);
-    font-size: 12.5px;
-    text-align: left;
-    cursor: pointer;
-    transition: background 120ms var(--ease), border-color 120ms var(--ease);
-}
-
-.depart-pick:hover {
-    background: var(--route-tint-hover);
-    border-color: var(--route-line);
-}
-
-.depart-pick strong {
-    font-weight: 660;
-    font-variant-numeric: tabular-nums;
-}
-
-.depart-pick:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: 2px;
-}
-
-.depart-share {
-    color: var(--ink-2);
-    font-size: 11.5px;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-}
-
-.depart .verdict {
-    margin-top: 9px;
-    padding-top: 0;
-    border-top: none;
-}
-
-/* --- spinner ----------------------------------------------------------- */
-
-.spinner {
-    width: 13px;
-    height: 13px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    border: 2px solid rgba(37, 99, 235, 0.22);
-    border-top-color: var(--route);
-    animation: spin 640ms linear infinite;
-}
-
+/* Departure comparison */
+.depart-slot, .depart { margin-top: 14px; }
+.depart { padding-top: 14px; border-top: 1px solid var(--panel-brd); }
+.chart { display: block; width: 100%; height: auto; overflow: visible; }
+.chart-area { opacity: 0.13; }
+.chart-route { fill: none; stroke: var(--route); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
+.chart-direct { fill: none; stroke: var(--baseline); stroke-width: 1.4; stroke-dasharray: 3 3; stroke-linecap: round; }
+.chart-now { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.55; }
+.chart-best { fill: var(--route); stroke: var(--panel-bg); stroke-width: 1.6; }
+.chart-hit { fill: transparent; cursor: pointer; }
+.chart-hit:hover { fill: var(--ink); fill-opacity: 0.05; }
+.depart-select { display: grid; gap: 6px; margin-top: 12px; color: var(--ink-2); font-size: 11px; }
+.depart-select select { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--panel-brd); border-radius: 6px; color: var(--ink); background: var(--panel-bg); font-size: 12px; }
+.depart-pick { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; margin-top: 10px; padding: 9px 11px; border-radius: 6px; border: 1px solid var(--route-line); background: var(--route-tint); color: var(--ink); font-size: 12px; text-align: left; cursor: pointer; }
+.depart-pick:hover { background: var(--route-tint-hover); }
+.depart-pick strong { font-weight: 650; font-variant-numeric: tabular-nums; }
+.depart-share { color: var(--ink-2); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.depart .verdict { margin-top: 9px; padding-top: 0; border-top: 0; }
+.spinner { width: 13px; height: 13px; flex-shrink: 0; border-radius: 50%; border: 2px solid var(--route-line); border-top-color: var(--route); animation: spin 640ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* --- map markers ------------------------------------------------------- */
-
-.marker {
-    width: 22px;
-    height: 22px;
-    border-radius: 50% 50% 50% 2px;
-    transform: rotate(-45deg);
-    display: grid;
-    place-items: center;
-    border: 2px solid #fff;
-    box-shadow: var(--marker-shadow);
-    cursor: pointer;
-}
-
-.marker span {
-    /* Blocked, because `transform` does nothing to a non-replaced inline box --
-       the letter would ride along with the pin's -45deg and land on its side. */
-    display: block;
-    transform: rotate(45deg);
-    font: 650 10px/1 var(--font-sans);
-    color: #fff;
-}
-
+/* Pins and native map controls */
+.marker { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; border: 2px solid #fff; box-shadow: var(--marker-shadow); cursor: pointer; }
+.marker span { display: block; color: #fff; font: 650 11px/1 var(--font-sans); }
 .marker-a { background: var(--start); }
 .marker-b { background: var(--end); }
-
-/* --- maplibre's own furniture ------------------------------------------ */
-
-/* Its controls ship square and opaque. Left alone they are the one part of the
-   screen that does not belong to this design. */
-.maplibregl-ctrl-top-right { top: 8px; right: 8px; }
-
-.maplibregl-ctrl-group {
-    border-radius: var(--r-md) !important;
-    overflow: hidden;
-    background: var(--panel-bg) !important;
-    -webkit-backdrop-filter: var(--panel-blur);
-    backdrop-filter: var(--panel-blur);
-    border: 1px solid var(--panel-brd);
-    box-shadow: var(--panel-shadow), inset 0 1px 0 var(--panel-hi) !important;
-}
-
+.maplibregl-ctrl-bottom-right { right: 14px; bottom: 14px; }
+.maplibregl-ctrl-group { overflow: hidden; border-radius: 6px !important; background: var(--panel-bg) !important; border: 1px solid var(--panel-brd); box-shadow: var(--panel-shadow) !important; }
 .maplibregl-ctrl-group button + button { border-top: 1px solid var(--panel-brd); }
-
-.maplibregl-ctrl-group button:hover { background: rgba(255, 255, 255, 0.75); }
-
-.maplibregl-ctrl-scale {
-    background: var(--panel-bg) !important;
-    -webkit-backdrop-filter: var(--panel-blur);
-    backdrop-filter: var(--panel-blur);
-    border-color: var(--panel-brd) !important;
-    border-radius: 0 0 var(--r-sm) var(--r-sm);
-    color: var(--ink-2);
-    font: 500 10px/1.6 var(--font-sans) !important;
-    font-variant-numeric: tabular-nums;
-    padding: 0 6px 1px;
-}
-
-.maplibregl-ctrl-attrib {
-    background: rgba(252, 251, 249, 0.72) !important;
-    -webkit-backdrop-filter: blur(8px);
-    backdrop-filter: blur(8px);
-    border-radius: var(--r-sm) 0 0 0;
-    font-size: 10.5px !important;
-}
-
+.maplibregl-ctrl-group button:hover { background: var(--control-hover); }
+.maplibregl-ctrl-scale { background: var(--panel-bg) !important; border-color: var(--ink-3) !important; color: var(--ink-2); font: 500 10px/1.6 var(--font-sans) !important; padding: 0 6px 1px; }
+.maplibregl-ctrl-attrib { background: var(--panel-bg) !important; color: var(--ink-2); font-size: 10px !important; }
 .maplibregl-ctrl-attrib a { color: var(--ink-2); }
+.status { top: 24px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 9px; max-width: min(400px, calc(100vw - 48px)); padding: 10px 13px; color: var(--danger-ink); font-size: 12px; z-index: 4; }
+.status-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--danger); }
 
-/* The two pieces of maplibre furniture that paint literal light colours, and
-   its icons, which are dark SVGs drawn for a light button. */
-:root[data-theme="night"] .maplibregl-ctrl-group button:hover { background: var(--control-hover); }
-
-:root[data-theme="night"] .maplibregl-ctrl-attrib {
-    background: var(--panel-bg) !important;
-    color: var(--ink-2);
+@media (min-width: 721px) and (max-width: 1000px) {
+    .workspace-note { display: none; }
+    .status { top: 94px; left: auto; right: 24px; transform: none; max-width: calc(100% - 408px); }
 }
 
-:root[data-theme="night"] .maplibregl-ctrl-icon,
-:root[data-theme="night"] .maplibregl-ctrl-attrib-button { filter: invert(1); }
-
-/* --- small screens ------------------------------------------------------ */
-
-/* The panels are sized for a desktop map. On a phone they would cover the city
-   they are annotating, so they become a single column that shares the width
-   and leaves the middle of the map clear. */
+/* The bottom planner leaves the rest of the phone's screen for the map. */
 @media (max-width: 720px) {
-    .summary {
-        top: auto;
-        bottom: 12px;
-        left: 12px;
-        right: 12px;
-        width: auto;
-        order: 2;
-    }
-
-    .dock {
-        bottom: auto;
-        top: 134px;
-        left: 12px;
-        right: 12px;
-        width: auto;
-        padding: 13px 14px;
-        gap: 13px;
-    }
-
-    .brand { top: 12px; left: 12px; right: 12px; }
-
-    /* Under the brand, and the dock moves down to make room. The field keeps a
-       fixed height whatever the search is doing -- the results drop over the
-       map rather than pushing it -- so nothing below it ever shifts. */
-    .search { top: 74px; left: 12px; right: 12px; width: auto; }
-
-    .dock-foot { padding-top: 11px; }
-
-    /* The summary now occupies the corner the zoom buttons were in. Touch has
-       pinch-zoom already, so they are the ones that give way -- but the
-       attribution is a licence term and stays, lifted clear of the card. */
+    .brand { top: 12px; left: 12px; right: 12px; width: auto; min-height: 52px; padding: 8px 10px; }
+    .brand-mark { width: 32px; height: 32px; }
+    .brand-sub { font-size: 10px; }
+    .workspace-note { display: none; }
+    .planner { top: auto; bottom: 0; left: 0; right: 0; width: auto; max-height: 42%; border-radius: 10px 10px 0 0; padding: 18px 20px max(20px, env(safe-area-inset-bottom)); }
+    .planner-heading h1 { font-size: 20px; }
+    .planner-heading p { margin-bottom: 14px; }
+    .route-points { grid-template-columns: 1fr 1fr; }
+    .route-point { gap: 7px; padding: 8px; min-height: 58px; }
+    .route-point .pin { width: 21px; height: 21px; }
+    .point-value { font-size: 11px; }
+    .departure-controls { margin-top: 16px; }
+    .field-head { margin-bottom: 4px; }
+    .field-value.is-clock { font-size: 17px; }
+    .weather-policy { margin-top: 16px; padding: 14px 0; }
+    .summary { margin-top: 16px; }
+    .status { top: 76px; left: 12px; right: 12px; max-width: none; transform: none; padding: 9px 12px; }
+    .maplibregl-ctrl-bottom-right { bottom: calc(42% + 8px); right: 2px; }
     .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group,
     .maplibregl-ctrl-bottom-right .maplibregl-ctrl-scale { display: none; }
-
-    .summary { bottom: 34px; }
-
-    /* The card grows upward here, and with a departure chart in it that is far
-       enough to reach the dock. Capped and scrolled rather than allowed to run
-       underneath: the dock is opaque glass, so the collision is not visible as
-       a collision -- it reads as a card that has been cut off. */
-    .summary {
-        max-height: 46vh;
-        overflow-y: auto;
-        /* Scrolling to the end of the card should not then start panning the
-           city underneath it. */
-        overscroll-behavior: contain;
-    }
 }
 
-/* Motion is decoration here -- every number is also written out. */
+@media (max-width: 380px) {
+    .planner { padding-left: 14px; padding-right: 14px; }
+    .route-point { gap: 6px; }
+    .point-value { font-size: 10px; }
+    .stat { gap: 4px 5px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after {
-        animation-duration: 0.01ms !important;
-        animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
-    }
-}
-
-/* --- service status ------------------------------------------------------ */
-
-/* Top centre, and only ever visible when something is actually wrong. It sits
-   between the two top panels on purpose: the news is about the whole app, not
-   about either of them. */
-.status {
-    top: 16px;
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    padding: 9px 15px;
-    border-radius: 999px;
-    font-size: 12.5px;
-    color: var(--danger-ink);
-    max-width: min(420px, calc(100vw - 32px));
-}
-
-.status-dot {
-    width: 7px;
-    height: 7px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    background: var(--danger);
-    box-shadow: 0 0 0 3px rgba(185, 28, 28, 0.16);
-}
-
-@media (max-width: 720px) {
-    /* The brand has the top row to itself on a phone; below it is the dock. */
-    .status { top: 62px; }
+    *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }

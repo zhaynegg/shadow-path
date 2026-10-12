@@ -7,15 +7,11 @@ import networkx as nx
 import numpy as np
 import osmnx as ox
 import pytest
-from pydantic import ValidationError
-from shapely.geometry import Point
-
 from backend.config import CRS, LAT, LON, today
 from backend.core import search
 from backend.core.day import across_the_day, at_one_stamp
 from backend.core.graph import graph_nodes, nearest_node
 from backend.core.routing import (
-    MAX_ALPHA,
     MINUTES_PER_M,
     WALK_SPEED_MS,
     departures,
@@ -31,6 +27,8 @@ from backend.core.routing import (
 )
 from backend.core.streets import flatten_shapes
 from backend.main import RouteRequest
+from pydantic import ValidationError
+from shapely.geometry import Point
 
 # The three ways across the test graph, told apart by how shaded they are.
 DIRECT, SUNLIT, SHADED = 0.5, 0.0, 1.0
@@ -441,13 +439,24 @@ def test_departures_follows_a_negative_alpha_into_the_sun():
 
 # --- the request model ------------------------------------------------------
 
-def test_request_model_takes_signed_alpha_within_bounds():
+def test_request_model_refuses_a_caller_coefficient():
     here = {"origin": (0, 0), "destination": (1, 1), "date": today()}
-    assert RouteRequest(**here, alpha=-3.0).alpha == -3.0
+    assert not hasattr(RouteRequest(**here), "alpha")
 
-    for rejected in (-MAX_ALPHA - 1, MAX_ALPHA + 1, float("nan"), float("inf")):
+    for rejected in (-3, 0, 3, float("nan"), float("inf")):
         with pytest.raises(ValidationError):
             RouteRequest(**here, alpha=rejected)
+
+
+def test_departures_can_follow_sun_in_a_cold_morning_and_shade_in_a_warm_afternoon():
+    city, field, ends = three_ways()
+    shade = field(DIRECT, SHADED, SUNLIT)
+    day = across_the_day([shade, shade], [dt.time(12), dt.time(13)])
+
+    rows = departures(city, day, *ends, lambda at: -6 if at.hour == 12 else 6)["departures"]
+
+    assert rows[0]["shade_fraction"] == pytest.approx(SUNLIT)
+    assert rows[1]["shade_fraction"] == pytest.approx(SHADED)
 
 
 def test_request_model_requires_a_date_near_today():

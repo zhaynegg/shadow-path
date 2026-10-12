@@ -12,18 +12,22 @@ import { toMinutes } from './stamps'
 // draws the same picture a little larger rather than a stretched one.
 export const CHART = { width: 282, height: 86, pad: 5 }
 
-// What the reader actually asked for. The backend only ever measures shade; sun
-// is the other side of the same number, not a second measurement. Exactly the
-// rule RouteSummary reads its stat rows by, so the card and the chart cannot
-// end up describing two different walks.
+// Sun is the other side of the measured shade fraction. A chart must use one
+// direction throughout; a weather-driven day can contain both preferences.
 export const share = (fraction: number, seekingSun: boolean) =>
     seekingSun ? 1 - fraction : fraction
 
-// How much the detour bought at this hour, in the direction asked for. Reads
-// the same subtraction either way round: shade gained, or shade given up, which
-// is sun gained.
-export const gain = (row: Departure, seekingSun: boolean) =>
-    share(row.shade_fraction, seekingSun) - share(row.baseline_shade_fraction, seekingSun)
+// Improvements can be compared across modes; raw shade and sun shares cannot.
+// Balanced weather has no exposure preference, so it earns no detour benefit.
+export const gain = (row: Departure) => {
+    if (row.preference.mode === 'balanced') return 0
+    const seekingSun = row.preference.mode === 'sun'
+    return share(row.shade_fraction, seekingSun) - share(row.baseline_shade_fraction, seekingSun)
+}
+
+export const preferredShare = (row: Departure) => row.preference.mode === 'balanced'
+    ? null
+    : share(row.shade_fraction, row.preference.mode === 'sun')
 
 // Where each stamp sits along the x axis: by the clock, not by index. The
 // stamps bunch up at dawn and dusk, because a low sun moves a shadow across a
@@ -74,34 +78,45 @@ export const bands = (xs: number[]) =>
     })
 
 export type Verdict = {
-    // The hour with the most of what was asked for. This is the answer to the
-    // question as it was put, and on most walks it is dawn or dusk.
+    // A useful exposure improvement with less additional walking. If no hour
+    // offers an improvement, use the shortest walk and keep the earlier tie.
     best: Departure
-    bestShare: number
-    // The hour where detouring buys the most over the direct route. Not the
-    // same question, and usually not the same hour: at dusk the whole city is
-    // shaded and the clever route is worth nothing, which is worth saying out
-    // loud next to a recommendation to leave at dusk.
+    bestShare: number | null
+    bestGain: number
+    extraDuration_s: number
+    hasUsefulDetour: boolean
+    // The largest improvement, independent of detour length. Kept separate
+    // from the recommendation, which takes the extra walking into account.
     payoff: Departure
     payoffGain: number
 }
 
-export const verdict = (day: DayPlan, seekingSun: boolean): Verdict | null => {
+export const verdict = (day: DayPlan): Verdict | null => {
     const rows = day.departures
     if (!rows.length) return null
 
-    // Strict comparisons, so a tie keeps the earlier hour. Ties are ordinary
-    // near dusk, where several stamps round to fully shaded, and an answer that
-    // drifted to the last of them would be telling somebody to wait for no
-    // reason.
-    const best = rows.reduce((a, b) =>
-        share(b.shade_fraction, seekingSun) > share(a.shade_fraction, seekingSun) ? b : a)
-    const payoff = rows.reduce((a, b) => (gain(b, seekingSun) > gain(a, seekingSun) ? b : a))
+    const extraDuration = (row: Departure) => Math.max(row.duration_s - day.baseline_duration_s, 0)
+    // One minute of overhead prevents a tiny detour from dominating through
+    // division by nearly zero. Below half a percentage point the improvement
+    // cannot even be read in the UI; recommend the shortest walk instead.
+    const useful = rows.filter(row => gain(row) >= 0.005)
+    const value = (row: Departure) => gain(row) / (1 + extraDuration(row) / 60)
+    const shortest = rows.reduce((a, b) => b.duration_s < a.duration_s ? b : a)
+    const best = useful.length ? useful.reduce((a, b) => {
+        const difference = value(b) - value(a)
+        if (difference > 1e-9) return b
+        if (Math.abs(difference) <= 1e-9 && b.duration_s < a.duration_s) return b
+        return a
+    }) : shortest
+    const payoff = rows.reduce((a, b) => gain(b) > gain(a) ? b : a)
 
     return {
         best,
-        bestShare: share(best.shade_fraction, seekingSun),
+        bestShare: preferredShare(best),
+        bestGain: gain(best),
+        extraDuration_s: extraDuration(best),
+        hasUsefulDetour: useful.length > 0,
         payoff,
-        payoffGain: gain(payoff, seekingSun),
+        payoffGain: gain(payoff),
     }
 }
