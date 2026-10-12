@@ -9,21 +9,22 @@ graph is memoised under.
 import datetime as dt
 from pathlib import Path
 
-# `import ... as`, not `from backend import main`: backend/__init__.py defines a
-# main() of its own for the console script, and that name shadows this module.
-import backend.main as main  # noqa: PLR0402 -- the rewrite ruff suggests is the bug
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+from shapely.geometry import LineString
+
+# `import ... as`, not `from backend import main`: backend/__init__.py defines a
+# main() of its own for the console script, and that name shadows this module.
+import backend.main as main  # noqa: PLR0402 -- the rewrite ruff suggests is the bug
 from backend.config import CRS, LAT, LON, TZ, today
 from backend.core import preference
 from backend.core.day import across_the_day, at_one_stamp
 from backend.core.solar import daylight_times
 from backend.main import RouteRequest, WalkRequest, app
-from fastapi.testclient import TestClient
-from pydantic import ValidationError
-from shapely.geometry import LineString
 
 
 def valid_request(**overrides) -> dict:

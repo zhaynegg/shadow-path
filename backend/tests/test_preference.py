@@ -6,11 +6,12 @@ from http.client import IncompleteRead
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from fastapi.testclient import TestClient
+
 from backend.config import today
 from backend.core import preference
 from backend.core.preference import HourlyWeather
 from backend.main import app
-from fastapi.testclient import TestClient
 
 
 def weather(feels=5.0, cloud=20.0, precipitation=0.0):

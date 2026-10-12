@@ -7,6 +7,9 @@ import networkx as nx
 import numpy as np
 import osmnx as ox
 import pytest
+from pydantic import ValidationError
+from shapely.geometry import Point
+
 from backend.config import CRS, LAT, LON, today
 from backend.core import search
 from backend.core.day import across_the_day, at_one_stamp
@@ -27,8 +30,6 @@ from backend.core.routing import (
 )
 from backend.core.streets import flatten_shapes
 from backend.main import RouteRequest
-from pydantic import ValidationError
-from shapely.geometry import Point
 
 # The three ways across the test graph, told apart by how shaded they are.
 DIRECT, SUNLIT, SHADED = 0.5, 0.0, 1.0
