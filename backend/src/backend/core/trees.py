@@ -132,17 +132,15 @@ CANOPY_SOURCES = frozenset({HEIGHT_SOURCE, CANOPY_SOURCE, MEASURED_SOURCE})
 # treating it as opaque was overstating shade across most of the network.
 CANOPY_OPACITY = 0.7
 
-# Leaf-on window for Astana, as (month, day). Leaf-out is early May and the
-# fall is well under way by mid-October. Bare trees cast nothing worth routing
-# around, and getting this wrong is worse than having no trees at all: the
-# winter product is sun-seeking, so phantom canopy pushes a walker away from
-# streets that are genuinely sunny.
+# Modelled canopy-shade season, as (month, day): May through October inclusive.
+# From 1 November, omit tree shade from both tiles and routing scores. The
+# separate permanent crown layer continues to show where the trees stand.
 LEAF_OUT = (5, 1)
-LEAF_FALL = (10, 10)
+LEAF_FALL = (10, 31)
 
 
 def leaf_on(date: dt.date) -> bool:
-    """Is there a canopy on this date?
+    """Should canopy contribute to shadows and routing on this date?
 
     Year-agnostic: the window is a season, not a date range, so it holds for
     whichever year is being built. Both the tile export and the router call

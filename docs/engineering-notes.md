@@ -17,6 +17,7 @@ The API does not download OSM data or calculate city-wide shadow geometry during
 | --- | --- | --- |
 | `frontend/public/shadows/HHMM.pmtiles` | MapLibre and PMTiles | Draw the shadow geometry visible in the viewport |
 | `frontend/public/shadows/index.json` | Frontend | Identify the dataset's date, available times, and tile layer |
+| `frontend/public/tree-canopy.pmtiles` | MapLibre and PMTiles | Draw permanent crown footprints independently of departure time and season |
 | `data/cache/scored/<radius>/<date>/…` | FastAPI | Look up each street edge's shade fraction |
 
 The scores use the committed street tables' `(u, v, key)` edge index. A new graph snapshot can have different edges even when it describes the same city, so file existence alone does not prove compatibility. [`validate_runtime_assets.py`](../backend/scripts/validate_runtime_assets.py) checks the expected daylight stamps, index coverage, and shade fractions before deployment.
@@ -42,7 +43,7 @@ shade_fraction =
     (solid_shaded_length + 0.7 × canopy_shaded_length) / edge_length
 ```
 
-The canopy factor models partial transmission through foliage. The map uses the same relative factor for canopy opacity. It is a product assumption, not a measured transmission value for every tree.
+The canopy factor models partial transmission through foliage. The map uses the same relative factor for canopy shadow opacity; permanent crown footprints have separate visual styling. It is a product assumption, not a measured transmission value for every tree.
 
 Buildings are rendered above the ground shadows. A shadow polygon contains its casting footprint, but a shaded roof is not pavement that a pedestrian can use.
 
@@ -63,7 +64,9 @@ The loader records `height_source`, so estimated and tagged values remain distin
 
 Canopy preparation combines mapped OSM trees, Meta/WRI canopy-height data, and Sentinel-2-derived coverage. The measured canopy-height cache is preferred when present; model-derived coverage fills gaps. [`detect_trees.py`](../backend/scripts/detect_trees.py) uses a scikit-learn classifier and spatial validation, while [`fetch_canopy_height.py`](../backend/scripts/fetch_canopy_height.py) prepares the higher-resolution height data.
 
-[`trees.py`](../backend/src/backend/core/trees.py) currently models foliage from **1 May through 10 October**. This fixed season and fallback heights are approximations; they do not capture individual species, pruning, or daily changes in foliage.
+[`trees.py`](../backend/src/backend/core/trees.py) models foliage for shadows and routing from **1 May through 31 October**, inclusive. Tree shade is excluded from **1 November through 30 April**, while the crown footprints remain visible year-round. This fixed season and fallback heights are approximations; they do not capture individual species, pruning, or daily changes in foliage.
+
+The map draws crown footprints independently of that season and of the departure time. [`export_tree_tiles.py`](../backend/scripts/export_tree_tiles.py) exports the same cached canopy geometry to the committed `frontend/public/tree-canopy.pmtiles` asset, without applying the leaf-on rule or projecting shadows. The permanent layer is drawn above ground shadows and below buildings, routes, and place labels. Rebuild it when the geometry caches change; the normal frontend deployment bundles it without waiting for a daily shadow export.
 
 ## Cost function and the shortest-path baseline
 

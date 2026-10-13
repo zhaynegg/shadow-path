@@ -122,6 +122,18 @@ def test_bare_trees_cast_nothing():
     assert not T.leaf_on(dt.date(2026, 1, 15))
 
 
+@pytest.mark.parametrize(("date", "expected"), [
+    (dt.date(2026, 4, 30), False),
+    (dt.date(2026, 5, 1), True),
+    (dt.date(2026, 10, 13), True),
+    (dt.date(2026, 10, 31), True),
+    (dt.date(2026, 11, 1), False),
+    (dt.date(2027, 1, 1), False),
+])
+def test_tree_shade_season_boundaries(date, expected):
+    assert T.leaf_on(date) is expected
+
+
 # --- the builder ------------------------------------------------------------
 # It imports rasterio, which is the `ml` group and not installed in CI.
 

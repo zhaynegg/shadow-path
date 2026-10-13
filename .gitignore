@@ -52,6 +52,9 @@ frontend/public/*.pmtiles
 #   pmtiles extract https://build.protomaps.com/<YYYYMMDD>.pmtiles my_area.pmtiles \
 #     --bbox=70.3688,50.7669,72.3875,51.4848
 !frontend/public/my_area.pmtiles
+# Permanent tree crowns are bundled with the map, independently of daily
+# shadows. Rebuild only when the cached canopy geometry changes.
+!frontend/public/tree-canopy.pmtiles
 
 # Env & editors
 .env

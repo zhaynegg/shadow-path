@@ -23,6 +23,7 @@ import { COARSE_M, outOfReach, roughly, type Fix } from '../lib/locate'
 import { mapPlaces } from '../lib/mapPlaces'
 import { installPlaceIcons } from '../lib/placeIcons'
 import { PLACE_LAYER_IDS, PLACE_SOURCE, placeLayers } from '../lib/placeLayers'
+import { TREE_SOURCE, treeLayers } from '../lib/treeLayers'
 
 // What the backend last said, and which request it was saying it about. Either
 // a plan or a message, never both -- a failed request has no route to draw.
@@ -100,9 +101,8 @@ const SEARCH_ZOOM = 15
 // wrong stamp on screen. A visibility flip is local and cannot race.
 // A licence term, not a courtesy. The canopy in these tiles is cut from Meta
 // and WRI's 1 m canopy height map, which is CC-BY-4.0 and requires the credit
-// wherever the derived work is shown -- and this is the only place it is shown.
-// maplibre de-duplicates identical strings, so naming it on every stamp's source
-// puts it in the corner exactly once.
+// wherever the derived work is shown. MapLibre de-duplicates identical strings,
+// so the permanent crowns and each shadow source share one attribution.
 const CANOPY_CREDIT =
     'Canopy <a href="https://registry.opendata.aws/dataforgood-fb-forests/" '
     + 'target="_blank" rel="noreferrer">Meta/WRI</a> CC BY 4.0, imagery \u00a9 Maxar'
@@ -115,12 +115,11 @@ const shadowLayer = (time: string) => `shadow-${stem(time)}`
 // How much shade, whichever colour it is drawn in.
 const SHADOW_OPACITY = 0.38
 
-// A crown is not a wall. Tiles tag each blob 'solid' or 'canopy', and canopy is
-// drawn through the same factor the router weights it by -- CANOPY_OPACITY in
+// A crown is not a wall. Shadow tiles tag each blob 'solid' or 'canopy', and
+// canopy shade uses the same factor the router weights it by -- CANOPY_OPACITY in
 // core/trees.py. If you change one, change the other: a map that shades a
 // tree-lined street darker than the route thinks it is, is lying to the reader.
-// The palette's green is free of that: it changes which shade you are looking
-// at, never how much of it there is.
+// The permanent crown layer shows where trees stand and uses its own styling.
 const CANOPY_OPACITY = 0.7
 const FILL_OPACITY: maplibregl.ExpressionSpecification = [
     'case', ['==', ['get', 'kind'], 'canopy'],
@@ -606,7 +605,7 @@ function MapView() {
         // with no shadows on it is worth far more than nothing.
         if (!containerRef.current || (!manifest && !manifestError)) return
 
-        // Empty when the manifest never arrived: no sources, no layers, and
+        // Empty when the manifest never arrived: no shadow sources or layers, and
         // the clock below finds no stamp to show -- which is the same code
         // path as a night-time hour, already handled everywhere downstream.
         const stamps = manifest?.times ?? []
@@ -626,6 +625,14 @@ function MapView() {
                     protomaps: {
                         type: 'vector',
                         url: 'pmtiles:///my_area.pmtiles',
+                    },
+                    // Crown geometry is static, independent of the daily shade
+                    // manifest and the clock. Trees remain visible out of leaf
+                    // season and when all shadow layers are hidden at night.
+                    [TREE_SOURCE]: {
+                        type: 'vector',
+                        url: 'pmtiles:///tree-canopy.pmtiles',
+                        attribution: CANOPY_CREDIT,
                     },
                     // Shadows are tiles like the basemap, not a query: the
                     // browser pulls only the ones on screen, and they are
@@ -660,6 +667,9 @@ function MapView() {
                             'fill-opacity': FILL_OPACITY,
                         },
                     })),
+                    // Keep roofs above the measured crowns: canopy imagery
+                    // and building footprints can overlap at their edges.
+                    ...treeLayers(),
                     ...buildingLayers(colours),
                     // Over the buildings, under the route. A pin says where you
                     // are to within a few metres; tinting the footprint it
