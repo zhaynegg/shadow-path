@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import shapely
 from shapely.affinity import translate
+from shapely.errors import GEOSException
 from shapely.geometry import Polygon
 
 # Low sun makes h/tan(altitude) run away; past this the polygon is meaningless
@@ -15,6 +16,18 @@ MAX_SHADOW_M = 300.0
 # Geometry tolerance for the exported file. 1 m is well below one screen pixel
 # at any zoom the shadow layer is drawn at, and cuts the file size sharply.
 SIMPLIFY_M = 1.0
+
+# Swept edges can be nearly coincident at particular sun angles, even with
+# valid footprints. Retry failed overlays on a millimetre grid, far below the
+# export's 1 m simplification, without paying for snapping on every footprint.
+SHADOW_GRID_M = 0.001
+
+
+def _shadow_union(geoms):
+    try:
+        return shapely.union_all(geoms)
+    except GEOSException:
+        return shapely.union_all(geoms, grid_size=SHADOW_GRID_M)
 
 
 def cast_shadow(geom, height_m: float, altitude: float, azimuth: float):
@@ -48,7 +61,7 @@ def cast_shadow(geom, height_m: float, altitude: float, azimuth: float):
                 Polygon([a, b, (b[0] + dx, b[1] + dy), (a[0] + dx, a[1] + dy)])
                 for a, b in pairwise(coords)
             )
-    return shapely.union_all(parts)
+    return _shadow_union(parts)
 
 
 def shadow_field(gdf: gpd.GeoDataFrame, altitude: float, azimuth: float):
@@ -63,7 +76,7 @@ def shadow_field(gdf: gpd.GeoDataFrame, altitude: float, azimuth: float):
     ).dropna()
     if shadows.empty:
         return None
-    return gpd.GeoSeries(shadows, crs=gdf.crs).union_all()
+    return _shadow_union(shadows.to_numpy())
 
 
 def layered_field(gdf: gpd.GeoDataFrame, altitude: float, azimuth: float, soft: pd.Series):
@@ -81,7 +94,10 @@ def layered_field(gdf: gpd.GeoDataFrame, altitude: float, azimuth: float, soft: 
     dappled = shadow_field(gdf[soft], altitude, azimuth)
 
     if dappled is not None and opaque is not None:
-        dappled = dappled.difference(opaque)
+        try:
+            dappled = shapely.difference(dappled, opaque)
+        except GEOSException:
+            dappled = shapely.difference(dappled, opaque, grid_size=SHADOW_GRID_M)
         if dappled.is_empty:
             dappled = None
     return opaque, dappled
